@@ -879,9 +879,9 @@ vec4 trans(vec2 uv) {
     vec2 u2 = vec2(uv.x + off, uv.y);
     float sh = 0.03 * g;
     bool useB = p > 0.5 ? hash(vec2(seed, 3.0)) > 0.15 : hash(vec2(seed, 7.0)) > 0.85;
-    vec4 cr = useB ? SB(u2 + vec2(sh, 0.0)) : SA(u2 + vec2(sh, 0.0));
-    vec4 cg = useB ? SB(u2) : SA(u2);
-    vec4 cb = useB ? SB(u2 - vec2(sh, 0.0)) : SA(u2 - vec2(sh, 0.0));
+    vec4 cr = useB ? texture2D(uB, mirror(u2 + vec2(sh, 0.0))) : texture2D(uA, mirror(u2 + vec2(sh, 0.0)));
+    vec4 cg = useB ? texture2D(uB, mirror(u2)) : texture2D(uA, mirror(u2));
+    vec4 cb = useB ? texture2D(uB, mirror(u2 - vec2(sh, 0.0))) : texture2D(uA, mirror(u2 - vec2(sh, 0.0)));
     vec4 c = vec4(cr.r, cg.g, cb.b, max(cg.a, max(cr.a, cb.a)));
     float line = step(0.97, hash(vec2(floor(uv.y * 120.0), seed))) * g;
     c.rgb = mix(c.rgb, vec3(1.0) * c.a, line * 0.6);
