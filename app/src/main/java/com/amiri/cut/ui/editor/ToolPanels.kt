@@ -17,6 +17,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.outlined.AcUnit
+import androidx.compose.material.icons.outlined.SwapVert
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -78,18 +83,31 @@ import com.amiri.cut.ui.theme.glassAccent
 /** Contextual panel shown above the bottom toolbar for the active tool. */
 @Composable
 fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).glass(RoundedCornerShape(18.dp)).padding(10.dp)) {
-        when (tool) {
-            EditorTool.MEDIA -> MediaPanel(c)
-            EditorTool.CUT -> CutPanel(c)
-            EditorTool.ROTO -> RotoPanel(c)
-            else -> NotYetPanel(tool)
+    Box(
+        modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).glass(RoundedCornerShape(18.dp))
+            .heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(10.dp),
+    ) {
+        Column {
+            c.busy?.let { b -> BusyBar(c, b) }
+            when (tool) {
+                EditorTool.MEDIA -> MediaPanel(c)
+                EditorTool.CUT -> CutPanel(c)
+                EditorTool.ROTO -> RotoPanel(c)
+                EditorTool.TRANSFORM -> TransformPanel(c)
+                EditorTool.SPEED -> SpeedPanel(c)
+                EditorTool.MASK -> MaskPanel(c)
+                EditorTool.TRACK -> TrackPanel(c)
+                EditorTool.TEXT -> TextPanel(c)
+                EditorTool.COLOR -> ColorPanel(c)
+                EditorTool.EFFECTS -> EffectsPanel(c)
+                EditorTool.AUDIO -> AudioPanel(c)
+            }
         }
     }
 }
 
 @Composable
-private fun PanelAction(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun PanelAction(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
     val view = LocalView.current
     Column(
         Modifier.width(66.dp).clip(RoundedCornerShape(12.dp))
@@ -113,6 +131,8 @@ private fun CutPanel(c: EditorController) {
         PanelAction(Icons.Outlined.DeleteSweep, "Ripple del", enabled = sel != null) { c.rippleDeleteSelected() }
         PanelAction(Icons.Outlined.ContentCopy, "Duplicate", enabled = sel != null) { c.duplicateSelected() }
         PanelAction(if (clip?.locked == true) Icons.Outlined.LockOpen else Icons.Outlined.Lock, if (clip?.locked == true) "Unlock" else "Lock clip", enabled = sel != null) { c.toggleClipLock() }
+        PanelAction(Icons.Outlined.AcUnit, "Freeze") { c.freezeFrame() }
+        PanelAction(Icons.Outlined.SwapVert, "Reverse", enabled = sel != null) { c.reverseSelected() }
         PanelAction(Icons.Outlined.Bookmark, "Marker") { c.addMarker(); Haptics.tick(view) }
         PanelAction(Icons.Outlined.BookmarkRemove, "Del marker") { if (!c.removeMarkerAtPlayhead()) c.toast = Toast("No marker at the playhead") }
     }
@@ -212,6 +232,11 @@ private fun AssetTile(
                         leadingIcon = { Icon(if (missing) Icons.Outlined.Link else Icons.Outlined.SwapHoriz, null) },
                         onClick = { menu = false; onReplace() },
                     )
+                    if (a.type == MediaType.VIDEO) DropdownMenuItem(
+                        text = { Text(if (a.proxyUri != null) "Rebuild proxy" else "Build proxy (fast preview)") },
+                        leadingIcon = { Icon(Icons.Outlined.Speed, null) },
+                        onClick = { menu = false; c.makeProxy(a.id) },
+                    )
                     DropdownMenuItem(text = { Text("Remove from media") }, leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null) }, onClick = { menu = false; onRemove() })
                 }
             }
@@ -232,29 +257,6 @@ private fun AssetTile(
         )
     }
 }
-
-/** Honest placeholder: the tool exists in the roadmap but is not implemented in this build. */
-@Composable
-private fun NotYetPanel(tool: EditorTool) {
-    val what = when (tool) {
-        EditorTool.TRANSFORM -> "Crop, rotate, flip, scale, position, anchor, opacity, blend mode."
-        EditorTool.SPEED -> "Constant speed 0.25×–4×, custom curves, reverse, freeze frame."
-        EditorTool.MASK -> "Rectangle, ellipse and pen masks with feather, expansion, invert and keyframes."
-        EditorTool.TRACK -> "On-device position / scale / rotation tracking with proxy resolution."
-        EditorTool.ROTO -> "Roto brush with add/subtract, propagation and refine edge."
-        EditorTool.TEXT -> "Typography engine with Persian/Arabic RTL, custom TTF/OTF fonts."
-        EditorTool.COLOR -> "Basic, HSL, curves, lift/gamma/gain, .CUBE LUTs, scopes, before/after."
-        EditorTool.EFFECTS -> "GPU effects: glow, light sweep, light rays, light leaks, film, blur, motion blur, chroma key."
-        EditorTool.AUDIO -> "Volume and fades with keyframes, speed, per-clip mute."
-        else -> ""
-    }
-    Column(Modifier.fillMaxWidth().height(86.dp), verticalArrangement = Arrangement.Center) {
-        Text("${tool.label} — arrives in Stage ${tool.stage}", color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium)
-        Text(what, color = Amiri.TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-        Text("Not implemented in this build — no fake controls.", color = Amiri.TextTertiary, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-    }
-}
-
 
 // ───────────────────────────── Roto ─────────────────────────────
 
@@ -327,7 +329,7 @@ private fun RotoPanel(c: EditorController) {
 }
 
 @Composable
-private fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
+internal fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
     val accent = LocalAccent.current
     val shape = RoundedCornerShape(10.dp)
     Box(
@@ -341,7 +343,7 @@ private fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
+internal fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
     val accent = LocalAccent.current
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(34.dp)) {
         Text(label, color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(56.dp))

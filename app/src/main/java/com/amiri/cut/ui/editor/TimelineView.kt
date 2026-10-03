@@ -107,6 +107,7 @@ private sealed interface Hit {
     data object Empty : Hit
     data class ClipHit(val track: Track, val clip: Clip) : Hit
     data class Handle(val clip: Clip, val start: Boolean) : Hit
+    data class KeyHit(val clip: Clip, val t: Long) : Hit
 }
 
 private enum class Phase { TAP, DRAG, LONG, MULTI }
@@ -149,6 +150,14 @@ private class TimelineGeometry {
         val i = trackIndexAt(o.y)
         if (i < 0) return Hit.Empty
         val t = p.tracks[i]
+        // Keyframe diamonds of the selected clip (bottom edge of the clip).
+        selectedId?.let { sid ->
+            val c = t.clips.firstOrNull { it.id == sid }
+            if (c != null && o.y > rowY(i) + rowHeights[i] - handleW * 1.6f) {
+                val near = c.keyTimes().minByOrNull { abs(xOf(c.startUs + it) - o.x) }
+                if (near != null && abs(xOf(c.startUs + near) - o.x) < handleW * 1.2f) return Hit.KeyHit(c, near)
+            }
+        }
         // Trim handles of the selected clip take priority (with a generous touch zone).
         selectedId?.let { sid ->
             val c = t.clips.firstOrNull { it.id == sid }
@@ -420,6 +429,22 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
                             }
                         }
 
+                        suspend fun AwaitPointerEventScope.keyDrag(k: Hit.KeyHit) {
+                            c.engine.pause()
+                            var cur = k.t
+                            val f = FrameTime.fromFrame(1, fps)
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!ch.pressed) break
+                                val dt = ((ch.position.x - down.position.x) / geo.pps * 1_000_000.0).toLong()
+                                val nt = FrameTime.quantize((k.t + dt).coerceIn(0, k.clip.durationUs - f), fps)
+                                if (nt != cur) { c.moveKeysAt(k.clip.id, cur, nt, live = true); cur = nt; Haptics.tick(view) }
+                                ch.consume()
+                            }
+                            c.endEdit("Move keyframes")
+                        }
+
                         suspend fun AwaitPointerEventScope.waitUp() {
                             while (true) {
                                 val ev = awaitPointerEvent()
@@ -439,6 +464,7 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
                                     Hit.Ruler -> { c.engine.pause(); c.engine.seekTo(geo.usAt(down.position.x)); Haptics.tick(view) }
                                     is Hit.ClipHit -> { c.select(hit.clip.id); Haptics.select(view) }
                                     is Hit.Handle -> Unit
+                                    is Hit.KeyHit -> { c.engine.pause(); c.engine.seekTo(hit.clip.startUs + hit.t); Haptics.select(view) }
                                     Hit.Empty -> {
                                         if (isDouble) {
                                             // Double tap → fit whole project
@@ -450,9 +476,11 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
                             }
                             Phase.DRAG -> when (hit) {
                                 is Hit.Handle -> trim(hit)
+                                is Hit.KeyHit -> keyDrag(hit)
                                 else -> scrub()
                             }
                             Phase.LONG -> when (hit) {
+                                is Hit.KeyHit -> keyDrag(hit)
                                 is Hit.Handle -> trim(hit)
                                 is Hit.ClipHit -> move(hit)
                                 Hit.Ruler -> {
@@ -642,7 +670,12 @@ private fun DrawScope.drawClip(
     val asset = project.asset(clip.assetId)
     val missing = asset != null && clip.assetId in c.missingAssets
 
-    drawRoundRect(clipColor(track.kind).copy(alpha = if (ghost) 0.75f else 1f), Offset(left, top), Size(right - left, h), rr)
+    val baseColor = when (clip.kind) {
+        com.amiri.cut.core.model.ClipKind.TEXT -> Amiri.ClipText
+        com.amiri.cut.core.model.ClipKind.ADJUSTMENT -> Color(0xFF2E2A45)
+        else -> clipColor(track.kind)
+    }
+    drawRoundRect(baseColor.copy(alpha = if (ghost) 0.75f else 1f), Offset(left, top), Size(right - left, h), rr)
 
     clipRect(max(left, 0f), top, min(right, w), top + h) {
         if (asset != null && track.kind != TrackKind.AUDIO) {
@@ -695,6 +728,13 @@ private fun DrawScope.drawClip(
         // Clip name
         val label = buildString {
             if (clip.locked) append("🔒 ")
+            when (clip.kind) {
+                com.amiri.cut.core.model.ClipKind.TEXT -> append("T  ")
+                com.amiri.cut.core.model.ClipKind.ADJUSTMENT -> append("◇ ")
+                else -> Unit
+            }
+            if (clip.effects.isNotEmpty()) append("fx${clip.effects.size} · ")
+            if (clip.speed != 1f || clip.ramp != null) append(if (clip.ramp != null) "ramp · " else "${"%.2g".format(clip.speed)}× · ")
             if (clip.roto != null && clip.roto.keys.isNotEmpty()) append(if (clip.roto.enabled) "◐ ROTO · " else "◐ off · ")
             append(clip.name)
             if (missing) append(" · MISSING")
@@ -721,6 +761,19 @@ private fun DrawScope.drawClip(
         else -> Color.White.copy(alpha = 0.08f)
     }
     drawRoundRect(borderColor, Offset(left, top), Size(right - left, h), rr, style = Stroke(if (selected || ghost) 2.5f else 1f))
+
+    // Keyframe diamonds
+    if (selected && !ghost) {
+        val ky = top + h - 6f
+        val d = 5f
+        for (kt in clip.keyTimes()) {
+            val kx = geo.xOf(clip.startUs + kt)
+            if (kx < left - d || kx > right + d) continue
+            val path = Path().apply { moveTo(kx, ky - d); lineTo(kx + d, ky); lineTo(kx, ky + d); lineTo(kx - d, ky); close() }
+            drawPath(path, accent)
+            drawPath(path, Color.Black.copy(alpha = 0.6f), style = Stroke(1f))
+        }
+    }
 
     // Trim handles
     if (selected && !ghost) {

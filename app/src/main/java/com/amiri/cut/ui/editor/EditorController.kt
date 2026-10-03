@@ -54,8 +54,8 @@ enum class EditorTool(val label: String, val stage: Int) {
     EFFECTS("Effects", 7),
     AUDIO("Audio", 10),
     ;
-    /** Tools that are fully implemented in this build. */
-    val available: Boolean get() = this == MEDIA || this == CUT || this == ROTO
+    /** Every tool is implemented. */
+    val available: Boolean get() = true
 }
 
 data class Toast(val text: String, val id: Long = System.nanoTime())
@@ -72,6 +72,12 @@ class EditorController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     val engine = PreviewEngine(app)
+
+    /** Measures text layers for on-screen gizmos (no GL needed). */
+    val textMeasurer = com.amiri.cut.render.TextRenderer(app.fonts)
+
+    /** Eyedropper: when set, the next tap on the preview picks a color for this callback. */
+    var pickColorFor by mutableStateOf<((Float, Float, Float) -> Unit)?>(null)
 
     var project by mutableStateOf<Project?>(null)
         private set
@@ -111,9 +117,7 @@ class EditorController(
     val isClosing: Boolean get() = closing
 
     init {
-        engine.maskProvider = { clip, sourceUs ->
-            clip.roto?.keyAt(sourceUs)?.let { k -> app.roto.load(projectId, k.file) }
-        }
+        engine.useProxies = app.settings.proxyMode
         // Periodic autosave safety net (every 10 s while there are unsaved changes).
         scope.launch {
             while (isActive) {
@@ -640,5 +644,512 @@ class EditorController(
         rotoJob?.cancel()
         rotoProgress = null
         toast = Toast("Propagation cancelled")
+    }
+
+    // ═════════════════════════ Stage 2+ : parameters & keyframes ═════════════════════════
+
+    /** What a parameter belongs to. */
+    sealed interface PTarget {
+        val clipId: String
+        data class Transform(override val clipId: String) : PTarget
+        data class Fx(override val clipId: String, val effectId: String) : PTarget
+        data class Mask(override val clipId: String, val maskId: String) : PTarget
+        data class Text(override val clipId: String) : PTarget
+        data class Audio(override val clipId: String) : PTarget
+    }
+
+    private var editBase: Project? = null
+
+    /** The parameter last touched (drives the keyframe interpolation editor). */
+    var focusParam by mutableStateOf<Pair<PTarget, String>?>(null)
+
+    /** Starts a continuous edit (slider drag, gizmo gesture) — one undo step until [endEdit]. */
+    fun beginEdit() { if (editBase == null) editBase = project }
+
+    /** Applies a project change immediately without creating an undo step. */
+    fun liveEdit(p: Project?) {
+        if (p == null) return
+        beginEdit()
+        setProjectInternal(p)
+    }
+
+    fun endEdit(label: String) {
+        val base = editBase ?: return
+        editBase = null
+        val cur = project ?: return
+        if (cur != base) {
+            history.record(base, label)
+            historyVersion++
+            project = cur.copy(modifiedAt = System.currentTimeMillis())
+            engine.setProject(project!!)
+            scheduleAutosave()
+        }
+    }
+
+    fun selectedClip(): Clip? = selectedClipId?.let { project?.clip(it) }
+
+    fun propsOf(t: PTarget): com.amiri.cut.core.model.Props? {
+        val c = project?.clip(t.clipId) ?: return null
+        return when (t) {
+            is PTarget.Transform -> c.transform
+            is PTarget.Fx -> c.effects.firstOrNull { it.id == t.effectId }?.props
+            is PTarget.Mask -> c.masks.firstOrNull { it.id == t.maskId }?.props
+            is PTarget.Text -> c.text?.props
+            is PTarget.Audio -> c.audio
+        }
+    }
+
+    private fun withProps(c: Clip, t: PTarget, f: (com.amiri.cut.core.model.Props) -> com.amiri.cut.core.model.Props): Clip = when (t) {
+        is PTarget.Transform -> c.copy(transform = f(c.transform))
+        is PTarget.Fx -> c.copy(effects = c.effects.map { if (it.id == t.effectId) it.copy(props = f(it.props)) else it })
+        is PTarget.Mask -> c.copy(masks = c.masks.map { if (it.id == t.maskId) it.copy(props = f(it.props)) else it })
+        is PTarget.Text -> c.copy(text = c.text?.let { it.copy(props = f(it.props)) })
+        is PTarget.Audio -> c.copy(audio = f(c.audio))
+    }
+
+    /** Clip-local playhead time (for keyframes). */
+    fun localTime(clipId: String): Long {
+        val c = project?.clip(clipId) ?: return 0
+        return (engine.position.value - c.startUs).coerceIn(0, c.durationUs)
+    }
+
+    private fun keyTolerance(): Long = 500_000L / (project?.settings?.fps ?: 30)
+
+    fun paramValue(t: PTarget, id: String, default: Float): Float =
+        propsOf(t)?.at(id, localTime(t.clipId), default) ?: default
+
+    fun isAnimated(t: PTarget, id: String): Boolean = propsOf(t)?.get(id)?.animated == true
+
+    fun keyHere(t: PTarget, id: String): Boolean =
+        propsOf(t)?.get(id)?.keyNear(localTime(t.clipId), keyTolerance()) != null
+
+    /** Sets a value at the playhead (adds/updates a key when the parameter is animated). */
+    fun setParam(t: PTarget, id: String, value: Float, default: Float, live: Boolean = true, label: String = "Adjust") {
+        val p = project ?: return
+        val lt = localTime(t.clipId)
+        val tol = keyTolerance()
+        val np = TimelineOps.updateClip(p, t.clipId) { c ->
+            withProps(c, t) { pr -> pr.with(id, (pr[id] ?: com.amiri.cut.core.model.Param(default)).set(lt, value, tol)) }
+        }
+        if (np == null) { toast = Toast("Clip is locked"); return }
+        if (live) liveEdit(np) else commit(label, np)
+    }
+
+    /** Diamond button: adds a key with the current value, or removes the key at the playhead. */
+    fun toggleKey(t: PTarget, id: String, default: Float) {
+        val p = project ?: return
+        val lt = localTime(t.clipId)
+        val tol = keyTolerance()
+        val cur = paramValue(t, id, default)
+        val has = keyHere(t, id)
+        val np = TimelineOps.updateClip(p, t.clipId) { c ->
+            withProps(c, t) { pr ->
+                val param = pr[id] ?: com.amiri.cut.core.model.Param(default)
+                pr.with(id, if (has) param.withoutKeyNear(lt, tol) else param.withKey(lt, cur, tol))
+            }
+        }
+        commit(if (has) "Remove keyframe" else "Add keyframe", np)
+    }
+
+    fun keyAtPlayhead(t: PTarget, id: String): com.amiri.cut.core.model.Key? =
+        propsOf(t)?.get(id)?.keyNear(localTime(t.clipId), keyTolerance())
+
+    /** Changes interpolation (and bezier handles) of the key at the playhead. */
+    fun setInterp(t: PTarget, id: String, interp: com.amiri.cut.core.model.Interp, bez: FloatArray? = null, live: Boolean = false) {
+        val p = project ?: return
+        val lt = localTime(t.clipId)
+        val tol = keyTolerance()
+        val np = TimelineOps.updateClip(p, t.clipId) { c ->
+            withProps(c, t) { pr ->
+                val param = pr[id] ?: return@withProps pr
+                pr.with(id, param.copy(keys = param.keys.map { k ->
+                    if (kotlin.math.abs(k.t - lt) <= tol) {
+                        if (bez != null) k.copy(interp = interp, c1x = bez[0], c1y = bez[1], c2x = bez[2], c2y = bez[3]) else k.copy(interp = interp)
+                    } else k
+                }))
+            }
+        }
+        if (live) liveEdit(np) else commit("Interpolation", np)
+    }
+
+    /** All keyframe times of the selected clip (clip-local µs). */
+    fun keyTimesOf(clipId: String): List<Long> = project?.clip(clipId)?.keyTimes() ?: emptyList()
+
+    /** Moves every key at [fromLocal] to [toLocal] (timeline keyframe drag). */
+    fun moveKeysAt(clipId: String, fromLocal: Long, toLocal: Long, live: Boolean) {
+        val p = project ?: return
+        val tol = keyTolerance()
+        fun mv(pr: com.amiri.cut.core.model.Props) = com.amiri.cut.core.model.Props(pr.p.mapValues { (_, prm) ->
+            if (prm.keys.isEmpty()) prm else prm.copy(keys = prm.keys.map { k -> if (kotlin.math.abs(k.t - fromLocal) <= tol) k.copy(t = toLocal) else k }.sortedBy { it.t })
+        })
+        val np = TimelineOps.updateClip(p, clipId) { c ->
+            c.copy(
+                transform = mv(c.transform), audio = mv(c.audio),
+                effects = c.effects.map { it.copy(props = mv(it.props)) },
+                masks = c.masks.map { it.copy(props = mv(it.props)) },
+                text = c.text?.let { it.copy(props = mv(it.props)) },
+            )
+        }
+        if (live) liveEdit(np) else commit("Move keyframes", np)
+    }
+
+    fun jumpKey(clipId: String, forward: Boolean) {
+        val c = project?.clip(clipId) ?: return
+        val lt = localTime(clipId)
+        val keys = c.keyTimes()
+        val k = if (forward) keys.firstOrNull { it > lt + keyTolerance() } else keys.lastOrNull { it < lt - keyTolerance() }
+        k ?: return
+        engine.pause()
+        engine.seekTo(c.startUs + k)
+    }
+
+    // ═════════════════════════ Transform ═════════════════════════
+
+    fun updateSelected(label: String, live: Boolean = false, f: (Clip) -> Clip) {
+        val id = selectedClipId ?: run { toast = Toast("Select a clip first"); return }
+        val np = TimelineOps.updateClip(project ?: return, id, f)
+        if (np == null) { toast = Toast("Clip is locked"); return }
+        if (live) liveEdit(np) else commit(label, np)
+    }
+
+    fun resetTransform() = updateSelected("Reset transform") { it.copy(transform = com.amiri.cut.core.model.Props(), flipH = false, flipV = false, blend = com.amiri.cut.core.model.BlendMode.NORMAL) }
+
+    /** Scale so the layer covers the whole canvas (Fill) or fits inside it (Fit). */
+    fun fitFill(fill: Boolean) {
+        val p = project ?: return
+        val c = selectedClip() ?: return
+        val a = p.asset(c.assetId) ?: return
+        val cw = p.settings.width.toFloat(); val ch = p.settings.height.toFloat()
+        val sw = a.displayWidth.toFloat().coerceAtLeast(1f); val sh = a.displayHeight.toFloat().coerceAtLeast(1f)
+        val fit = kotlin.math.min(cw / sw, ch / sh)
+        val scale = if (fill) kotlin.math.max(cw / (sw * fit), ch / (sh * fit)) else 1f
+        setParam(PTarget.Transform(c.id), "scale", scale, 1f, live = false, label = if (fill) "Fill" else "Fit")
+        setParam(PTarget.Transform(c.id), "px", 0f, 0f, live = false, label = "Center")
+        setParam(PTarget.Transform(c.id), "py", 0f, 0f, live = false, label = "Center")
+    }
+
+    // ═════════════════════════ Speed / reverse / freeze ═════════════════════════
+
+    fun setSpeed(v: Float) {
+        val id = selectedClipId ?: run { toast = Toast("Select a clip first"); return }
+        val np = TimelineOps.setSpeed(project ?: return, id, v)
+        if (np == null) toast = Toast("Not enough room after the clip — move or trim the next clip first")
+        else commit("Speed ${"%.2f".format(v)}×", np)
+    }
+
+    fun setRamp(r: com.amiri.cut.core.model.SpeedRamp?, live: Boolean = false) =
+        updateSelected("Speed ramp", live) { it.copy(ramp = r) }
+
+    /** Busy state for long on-device jobs (reverse, proxy, tracking, stabilization). */
+    data class Busy(val label: String, val progress: Float)
+    var busy by mutableStateOf<Busy?>(null)
+        private set
+    private var busyJob: Job? = null
+    private var busyCancel: java.util.concurrent.atomic.AtomicBoolean? = null
+
+    fun cancelBusy() {
+        busyCancel?.set(true)
+        busyJob?.cancel()
+        busy = null
+    }
+
+    private fun runBusy(label: String, block: suspend (cancel: java.util.concurrent.atomic.AtomicBoolean, progress: (Float) -> Unit) -> Unit) {
+        if (busy != null) { toast = Toast("Wait for the current job to finish"); return }
+        val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
+        busyCancel = cancel
+        busy = Busy(label, 0f)
+        engine.pause()
+        busyJob = scope.launch {
+            try {
+                block(cancel) { f -> busy = Busy(label, f.coerceIn(0f, 1f)) }
+            } catch (t: Throwable) {
+                if (!cancel.get() && t !is kotlinx.coroutines.CancellationException) toast = Toast("$label failed: ${t.message ?: t.javaClass.simpleName}")
+            } finally {
+                busy = null
+                busyCancel = null
+            }
+        }
+    }
+
+    fun reverseSelected() {
+        val c = selectedClip() ?: run { toast = Toast("Select a video clip"); return }
+        val p = project ?: return
+        val a = p.asset(c.assetId) ?: return
+        if (a.type != MediaType.VIDEO) { toast = Toast("Only video clips can be reversed"); return }
+        // Reverse again → back to the original source.
+        val orig = c.reversedFrom?.let { p.asset(it) }
+        if (orig != null) {
+            commit("Un-reverse", TimelineOps.swapToReversed(p, c.id, orig, a.id))
+            return
+        }
+        runBusy("Reversing") { cancel, prog ->
+            val rev = withContext(Dispatchers.Default) {
+                val r = com.amiri.cut.export.Transcode.reverse(app, app, projectId, a, cancel, prog)
+                r
+            }
+            val cur = project ?: return@runBusy
+            commit("Reverse", TimelineOps.swapToReversed(cur, c.id, rev, a.id))
+            requestCaches(rev)
+            toast = Toast("Clip reversed")
+        }
+    }
+
+    fun freezeFrame(seconds: Float = 2f) {
+        val p = project ?: return
+        val pos = engine.position.value
+        val c = selectedClip()?.takeIf { it.contains(pos) } ?: TimelineOps.topVisualClipAt(p, pos)?.second
+            ?: run { toast = Toast("Move the playhead over a video clip"); return }
+        val a = p.asset(c.assetId) ?: return
+        if (a.type != MediaType.VIDEO) { toast = Toast("Freeze frame works on video clips"); return }
+        val src = c.sourceTimeAt(pos)
+        runBusy("Freeze frame") { _, prog ->
+            val still = withContext(Dispatchers.IO) {
+                val bmp = BitmapLoader.videoFrame(app, a, src, 2160) ?: error("Couldn't read that frame")
+                val dir = java.io.File(app.filesDir, "projects/$projectId/media").apply { mkdirs() }
+                val f = java.io.File(dir, "freeze_${com.amiri.cut.core.model.newId()}.png")
+                f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                prog(1f)
+                MediaAsset(
+                    id = com.amiri.cut.core.model.newId(), uri = Uri.fromFile(f).toString(), type = MediaType.IMAGE,
+                    name = "Freeze " + FrameTime.timecode(src, p.settings.fps), durationUs = 0, width = bmp.width, height = bmp.height,
+                )
+            }
+            val cur = project ?: return@runBusy
+            val r = TimelineOps.insertFreeze(cur, c.id, pos, still, (seconds * 1_000_000).toLong())
+            commit("Freeze frame", r?.first)
+            r?.second?.let { selectedClipId = it.id }
+            requestCaches(still)
+        }
+    }
+
+    fun makeProxy(assetId: String) {
+        val a = project?.asset(assetId) ?: return
+        if (a.type != MediaType.VIDEO) return
+        runBusy("Building proxy") { cancel, prog ->
+            val uri = withContext(Dispatchers.Default) { com.amiri.cut.export.Transcode.proxy(app, app, a, cancel, prog) }
+            val cur = project ?: return@runBusy
+            commit("Proxy", cur.copy(assets = cur.assets.map { if (it.id == assetId) it.copy(proxyUri = uri) else it }))
+            toast = Toast("Proxy ready")
+        }
+    }
+
+    // ═════════════════════════ Masks ═════════════════════════
+
+    var selectedMaskId by mutableStateOf<String?>(null)
+    /** Pen tool: points (source uv) waiting to be closed into a path mask. */
+    var penPoints by mutableStateOf<List<Pair<Float, Float>>>(emptyList())
+    var penActive by mutableStateOf(false)
+
+    fun addMask(shape: com.amiri.cut.core.model.MaskShape) {
+        val m = com.amiri.cut.core.model.ShapeMask(com.amiri.cut.core.model.newId(), shape)
+        updateSelected("Add mask") { c -> c.copy(masks = (c.masks + m).takeLast(4)) }
+        selectedMaskId = m.id
+    }
+
+    fun closePenMask() {
+        val pts = penPoints
+        penActive = false
+        penPoints = emptyList()
+        if (pts.size < 3) { toast = Toast("Tap at least 3 points"); return }
+        val minX = pts.minOf { it.first }; val maxX = pts.maxOf { it.first }
+        val minY = pts.minOf { it.second }; val maxY = pts.maxOf { it.second }
+        val w = (maxX - minX).coerceAtLeast(0.01f); val h = (maxY - minY).coerceAtLeast(0.01f)
+        val path = pts.flatMap { listOf((it.first - minX) / w, (it.second - minY) / h) }
+        val props = com.amiri.cut.core.model.Props.of("x" to (minX + w / 2), "y" to (minY + h / 2), "w" to w, "h" to h, "feather" to 0.01f)
+        val m = com.amiri.cut.core.model.ShapeMask(com.amiri.cut.core.model.newId(), com.amiri.cut.core.model.MaskShape.PATH, props = props, path = path)
+        updateSelected("Pen mask") { c -> c.copy(masks = (c.masks + m).takeLast(4)) }
+        selectedMaskId = m.id
+    }
+
+    fun updateMask(maskId: String, label: String, live: Boolean = false, f: (com.amiri.cut.core.model.ShapeMask) -> com.amiri.cut.core.model.ShapeMask) =
+        updateSelected(label, live) { c -> c.copy(masks = c.masks.map { if (it.id == maskId) f(it) else it }) }
+
+    fun deleteMask(maskId: String) {
+        updateSelected("Delete mask") { c -> c.copy(masks = c.masks.filterNot { it.id == maskId }) }
+        if (selectedMaskId == maskId) selectedMaskId = null
+    }
+
+    // ═════════════════════════ Motion tracking ═════════════════════════
+
+    /** Regions to track (source uv). One = position; two = position + scale + rotation. */
+    var trackRegions by mutableStateOf(listOf(android.graphics.RectF(0.42f, 0.42f, 0.58f, 0.58f)))
+
+    fun trackForward() {
+        val c = selectedClip() ?: run { toast = Toast("Select the video clip to track"); return }
+        val p = project ?: return
+        val a = p.asset(c.assetId) ?: return
+        if (a.type != MediaType.VIDEO) { toast = Toast("Tracking needs a video clip"); return }
+        val pos = engine.position.value.coerceIn(c.startUs, c.endUs - 1)
+        val from = c.sourceTimeAt(pos)
+        val to = (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1)
+        val step = 1_000_000L / p.settings.fps
+        val regions = trackRegions.map { android.graphics.RectF(it) }
+        runBusy("Tracking") { cancel, prog ->
+            val samples = withContext(Dispatchers.Default) {
+                com.amiri.cut.media.MotionTracker.track(app, a, from, to, step, regions, { cancel.get() }, prog)
+            }
+            if (samples.size < 2) { toast = Toast("Couldn't track — choose a textured area"); return@runBusy }
+            val cur = project ?: return@runBusy
+            val old = cur.clip(c.id)?.tracking?.samples?.filter { it.sourceUs < from } ?: emptyList()
+            val data = com.amiri.cut.core.model.TrackData(old + samples, scaleRot = regions.size >= 2)
+            commit("Track", TimelineOps.updateClip(cur, c.id) { it.copy(tracking = data) })
+            toast = Toast("Tracked ${samples.size} frames")
+        }
+    }
+
+    fun clearTracking() = updateSelected("Clear track") { it.copy(tracking = null) }
+
+    /** Attach the selected clip to [targetClipId]'s motion track. */
+    fun follow(targetClipId: String?, position: Boolean = true, scale: Boolean = true, rotation: Boolean = true) {
+        if (targetClipId == null) { updateSelected("Detach") { it.copy(follow = null) }; return }
+        val ref = engine.position.value
+        updateSelected("Attach to track") { it.copy(follow = com.amiri.cut.core.model.Follow(targetClipId, ref, position, scale, rotation)) }
+    }
+
+    // ═════════════════════════ Stabilization ═════════════════════════
+
+    fun stabilize(mode: com.amiri.cut.core.model.StabMode, smoothness: Float, zoom: Float) {
+        val c = selectedClip() ?: run { toast = Toast("Select a video clip"); return }
+        val p = project ?: return
+        val a = p.asset(c.assetId) ?: return
+        if (a.type != MediaType.VIDEO) { toast = Toast("Stabilization needs a video clip"); return }
+        val step = 1_000_000L / p.settings.fps
+        runBusy("Stabilizing") { cancel, prog ->
+            val samples = withContext(Dispatchers.Default) {
+                com.amiri.cut.media.Stabilizer.analyze(app, a, c.sourceInUs, (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1), step, mode, smoothness, { cancel.get() }, prog)
+            }
+            if (samples.isEmpty()) { toast = Toast("Couldn't analyze this clip"); return@runBusy }
+            val cur = project ?: return@runBusy
+            commit("Stabilize", TimelineOps.updateClip(cur, c.id) {
+                it.copy(stab = com.amiri.cut.core.model.Stabilization(mode, smoothness, zoom, true, samples))
+            })
+            toast = Toast("Stabilized")
+        }
+    }
+
+    // ═════════════════════════ Text ═════════════════════════
+
+    fun addText(text: String = "Text") {
+        val (np, clip) = TimelineOps.addText(project ?: return, engine.position.value, text)
+        commit("Add text", np)
+        selectedClipId = clip.id
+    }
+
+    fun updateText(label: String, live: Boolean = false, f: (com.amiri.cut.core.model.TextSpec) -> com.amiri.cut.core.model.TextSpec) =
+        updateSelected(label, live) { c -> c.text?.let { c.copy(text = f(it), name = f(it).text.take(24).ifBlank { "Text" }) } ?: c }
+
+    fun importFont(uri: Uri, name: String) {
+        scope.launch {
+            val id = withContext(Dispatchers.IO) { app.fonts.import(uri, name) }
+            if (id == null) toast = Toast("Not a valid TTF/OTF font")
+            else { updateText("Font") { it.copy(font = id) }; toast = Toast("Font imported") }
+        }
+    }
+
+    // ═════════════════════════ Effects / color / LUT ═════════════════════════
+
+    var selectedEffectId by mutableStateOf<String?>(null)
+    var colorBefore by mutableStateOf(false)
+    var showScopes by mutableStateOf(false)
+
+    fun addEffect(type: String, opts: Map<String, String> = emptyMap()): String? {
+        val spec = com.amiri.cut.core.effects.EffectCatalog.spec(type) ?: return null
+        val defaults = spec.options.associate { it.id to it.default } + opts
+        var props = com.amiri.cut.core.model.Props()
+        if (type == "film") {
+            com.amiri.cut.core.effects.EffectCatalog.FILM_PRESET_VALUES[defaults["preset"]]?.forEach { (k, v) -> props = props.with(k, com.amiri.cut.core.model.Param(v)) }
+        }
+        val e = com.amiri.cut.core.model.Effect(com.amiri.cut.core.model.newId(), type, props = props, opts = defaults)
+        updateSelected("Add ${spec.label}") { c ->
+            if (c.kind == com.amiri.cut.core.model.ClipKind.MEDIA || c.kind == com.amiri.cut.core.model.ClipKind.ADJUSTMENT || c.kind == com.amiri.cut.core.model.ClipKind.TEXT) c.copy(effects = c.effects + e) else c
+        }
+        selectedEffectId = e.id
+        return e.id
+    }
+
+    /** The clip's color-correction effect, created on first use. */
+    fun ensureColorEffect(): String? {
+        val c = selectedClip() ?: return null
+        c.effects.firstOrNull { it.type == "color" }?.let { return it.id }
+        return addEffect("color")
+    }
+
+    fun updateEffect(effectId: String, label: String, live: Boolean = false, f: (com.amiri.cut.core.model.Effect) -> com.amiri.cut.core.model.Effect) =
+        updateSelected(label, live) { c -> c.copy(effects = c.effects.map { if (it.id == effectId) f(it) else it }) }
+
+    fun removeEffect(effectId: String) {
+        updateSelected("Remove effect") { c -> c.copy(effects = c.effects.filterNot { it.id == effectId }) }
+        if (selectedEffectId == effectId) selectedEffectId = null
+    }
+
+    fun moveEffect(effectId: String, delta: Int) = updateSelected("Reorder effects") { c ->
+        val l = c.effects.toMutableList()
+        val i = l.indexOfFirst { it.id == effectId }
+        val j = (i + delta).coerceIn(0, l.size - 1)
+        if (i >= 0 && i != j) { val e = l.removeAt(i); l.add(j, e) }
+        c.copy(effects = l)
+    }
+
+    fun applyFilmPreset(effectId: String, preset: String) {
+        val values = com.amiri.cut.core.effects.EffectCatalog.FILM_PRESET_VALUES[preset] ?: return
+        updateEffect(effectId, "Film preset") { e ->
+            var pr = e.props
+            values.forEach { (k, v) -> pr = pr.with(k, com.amiri.cut.core.model.Param(v)) }
+            e.copy(props = pr, opts = e.opts + ("preset" to preset))
+        }
+    }
+
+    fun importLut(uri: Uri, name: String, effectId: String?) {
+        scope.launch {
+            val stored = withContext(Dispatchers.IO) { app.luts.import(uri, name) }
+            if (stored == null) { toast = Toast("Not a valid .cube 3D LUT"); return@launch }
+            val id = effectId ?: addEffect("lut", mapOf("file" to stored))
+            if (effectId != null) updateEffect(effectId, "LUT") { it.copy(opts = it.opts + ("file" to stored)) }
+            selectedEffectId = id
+            toast = Toast("LUT imported")
+        }
+    }
+
+    fun addAdjustmentLayer() {
+        val (np, clip) = TimelineOps.addAdjustment(project ?: return, engine.position.value)
+        commit("Add adjustment layer", np)
+        selectedClipId = clip.id
+    }
+
+    /** Eyedropper: reads the source pixel at (u, v) of the selected video/photo clip. */
+    fun pickColor(u: Float, v: Float, onColor: (Float, Float, Float) -> Unit) {
+        val p = project ?: return
+        val c = selectedClip() ?: return
+        val a = p.asset(c.assetId) ?: return
+        val src = c.sourceTimeAt(engine.position.value)
+        scope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                if (a.type == MediaType.VIDEO) BitmapLoader.videoFrame(app, a, src, 320) else BitmapLoader.decodeImage(app, a, 320)
+            } ?: return@launch
+            val x = (u * bmp.width).toInt().coerceIn(0, bmp.width - 1)
+            val y = (v * bmp.height).toInt().coerceIn(0, bmp.height - 1)
+            val px = bmp.getPixel(x, y)
+            onColor(android.graphics.Color.red(px) / 255f, android.graphics.Color.green(px) / 255f, android.graphics.Color.blue(px) / 255f)
+        }
+    }
+
+    /** Pushes the current before/after and roto-painting state to the renderer. */
+    fun updateRenderOptions() {
+        val sel = selectedClipId
+        val rotoPainting = activeTool == EditorTool.ROTO && !rotoShowResult
+        engine.options = com.amiri.cut.render.RenderOptions(
+            checker = true,
+            bypassColorClipId = if (colorBefore) sel else null,
+            bypassRotoClipId = if (rotoPainting) rotoTarget()?.clip?.id else null,
+        )
+    }
+
+    // ═════════════════════════ Export ═════════════════════════
+
+    fun enqueueExport(settings: com.amiri.cut.export.ExportSettings, out: Uri) {
+        val p = project ?: return
+        val json = app.projects.json.encodeToString(Project.serializer(), p)
+        com.amiri.cut.export.ExportQueue.enqueue(app, p.name, p, settings, out, json)
+        toast = Toast("Export started — it continues in the background")
     }
 }

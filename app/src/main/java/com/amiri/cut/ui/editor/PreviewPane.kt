@@ -1,165 +1,396 @@
 package com.amiri.cut.ui.editor
 
 import android.graphics.Bitmap
-import android.view.TextureView
+import android.graphics.Matrix
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
+import android.opengl.GLSurfaceView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateRotation
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.amiri.cut.core.model.CanvasBackground
-import com.amiri.cut.engine.PreviewEngine
-import com.amiri.cut.media.BitmapLoader
+import com.amiri.cut.core.effects.MaskSpec
+import com.amiri.cut.core.effects.TransformSpec
+import com.amiri.cut.core.model.Clip
+import com.amiri.cut.core.model.MaskShape
+import com.amiri.cut.core.model.Project
+import com.amiri.cut.engine.PreviewRenderer
 import com.amiri.cut.media.RotoBrushMode
+import com.amiri.cut.render.Affine
+import com.amiri.cut.render.LayerMath
+import com.amiri.cut.ui.theme.Amiri
 import com.amiri.cut.ui.theme.LocalAccent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sin
 
-/**
- * Project canvas: the frame at the project's aspect ratio, black (or checkerboard
- * for transparent projects). Media is fitted inside it, exactly as it will be
- * composed for export until Transform adds position/scale.
- */
+/** Geometry of a layer on the overlay: canvas px (top-left) ↔ layer uv (top-left). */
+private class LayerGeo(val inv: FloatArray, val ch: Int) {
+    fun toCanvas(u: Float, v: Float): Offset = Affine.forward(inv, u, v, ch)?.let { Offset(it[0], it[1]) } ?: Offset.Zero
+    fun toLayer(o: Offset): Pair<Float, Float> = Affine.toLayer(inv, o.x, o.y, ch).let { it[0] to it[1] }
+}
+
+private fun layerGeo(c: EditorController, p: Project, clip: Clip, t: Long, w: Int, h: Int): LayerGeo? {
+    if (w <= 0 || h <= 0) return null
+    val (bw, bh) = LayerMath.baseSize(p, clip, t, w, h, c.textMeasurer) ?: return null
+    return LayerGeo(LayerMath.inverseOf(p, clip, t, bw, bh, w, h), h)
+}
+
 @Composable
 fun PreviewPane(c: EditorController, modifier: Modifier = Modifier) {
     val p = c.project ?: return
-    val context = LocalContext.current
-    val visual by c.engine.visual.collectAsState()
     val pos by c.engine.position.collectAsState()
+    val renderer = remember(c) { PreviewRenderer(c.app, c.projectId, c.engine) }
     val aspect = p.settings.aspect
-    val rotoActive = c.activeTool == EditorTool.ROTO
 
-    // Roto: show the untouched frame while painting unless "Result" is on.
-    LaunchedEffect(rotoActive, c.rotoShowResult) {
-        c.engine.rotoBypass = rotoActive && !c.rotoShowResult
-    }
+    LaunchedEffect(c.app.settings.previewQuality) { renderer.quality = c.app.settings.previewQuality.scale; c.engine.refreshFrame() }
+    LaunchedEffect(c.app.settings.proxyMode) { c.engine.useProxies = c.app.settings.proxyMode; c.engine.refreshFrame() }
+    LaunchedEffect(c.colorBefore, c.selectedClipId, c.activeTool, c.rotoShowResult) { c.updateRenderOptions() }
 
-    // Aspect of the media box (keeps the last video aspect so the TextureView doesn't jump).
-    var mediaAspect by remember { mutableStateOf(16f / 9f) }
-    val v = visual
-    val activeAsset = when (v) {
-        is PreviewEngine.Visual.Video -> p.asset(v.assetId)
-        is PreviewEngine.Visual.Image -> v.asset
-        PreviewEngine.Visual.None -> null
+    val scopes = remember { MutableStateFlow<ScopeData?>(null) }
+    DisposableEffect(c.showScopes) {
+        renderer.scopeSink = if (c.showScopes) { bytes, w, h -> scopes.value = ScopeData.compute(bytes, w, h) } else null
+        onDispose { renderer.scopeSink = null }
     }
-    if (activeAsset != null && activeAsset.displayWidth > 0 && activeAsset.displayHeight > 0) {
-        val a = activeAsset.displayWidth.toFloat() / activeAsset.displayHeight
-        if (a != mediaAspect) mediaAspect = a
-    }
-    val rotoTarget = if (rotoActive) remember(p, pos, c.selectedClipId) { c.rotoTarget() } else null
 
     Box(modifier.padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-        Box(
-            Modifier
-                .aspectRatio(aspect)
-                .clipToBounds()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() }, indication = null,
-                    enabled = !rotoActive,
-                ) { c.engine.togglePlay() },
-            contentAlignment = Alignment.Center,
-        ) {
-            if (p.settings.background == CanvasBackground.TRANSPARENT) Checkerboard() else Box(Modifier.fillMaxSize().background(Color.Black))
-
-            Box(Modifier.aspectRatio(mediaAspect)) {
-                // Video layer — a TextureView (non-opaque so roto-removed areas show the canvas).
-                AndroidView(
-                    factory = { ctx ->
-                        TextureView(ctx).also { tv ->
-                            tv.isOpaque = false
-                            c.engine.videoPlayer.setVideoTextureView(tv)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize().alpha(if (v is PreviewEngine.Visual.Video) 1f else 0f),
-                    onRelease = { tv -> c.engine.videoPlayer.clearVideoTextureView(tv) },
-                )
-
-                // Still image layer (roto applied in Compose with the same mask).
-                if (v is PreviewEngine.Visual.Image) {
-                    val bmp by produceState<Bitmap?>(null, v.asset.id) {
-                        value = BitmapLoader.previewImage(context, v.asset)
+        Box(Modifier.aspectRatio(aspect).clipToBounds(), contentAlignment = Alignment.Center) {
+            AndroidView(
+                factory = { ctx ->
+                    GLSurfaceView(ctx).apply {
+                        setEGLContextClientVersion(2)
+                        preserveEGLContextOnPause = true
+                        setRenderer(renderer)
+                        renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+                        renderer.view = this
                     }
-                    val clip = p.clip(v.clipId)
-                    val roto = clip?.roto?.takeIf { it.enabled && it.keys.isNotEmpty() }
-                    val applyMask = roto != null && !(rotoActive && !c.rotoShowResult)
-                    val mask = if (applyMask && clip != null) {
-                        remember(roto, c.rotoVersion) { roto!!.keyAt(clip.sourceTimeAt(pos))?.let { c.app.roto.load(c.projectId, it.file) } }
-                    } else null
-                    bmp?.let { b ->
-                        Image(
-                            b.asImageBitmap(), null, contentScale = ContentScale.FillBounds,
-                            modifier = Modifier.fillMaxSize()
-                                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-                                .drawWithContent {
-                                    drawContent()
-                                    if (mask != null) {
-                                        drawImage(
-                                            mask.asImageBitmap(),
-                                            srcOffset = IntOffset.Zero,
-                                            srcSize = IntSize(mask.width, mask.height),
-                                            dstOffset = IntOffset.Zero,
-                                            dstSize = IntSize(size.width.toInt(), size.height.toInt()),
-                                            blendMode = if (roto!!.invert) BlendMode.DstOut else BlendMode.DstIn,
-                                        )
-                                    }
-                                },
-                        )
-                    }
-                }
+                },
+                modifier = Modifier.fillMaxSize(),
+                onRelease = { v ->
+                    v.queueEvent { renderer.releaseGl() }
+                    c.engine.detachSurfaces()
+                    renderer.view = null
+                },
+            )
 
-                if (rotoActive && rotoTarget != null) RotoOverlay(c, rotoTarget)
+            val picking = c.pickColorFor
+            when {
+                picking != null -> EyedropperOverlay(c, p, pos)
+                c.activeTool == EditorTool.ROTO -> c.rotoTarget()?.let { RotoOverlay(c, p, it, pos) } ?: TapToPlay(c)
+                c.activeTool == EditorTool.TRANSFORM || c.activeTool == EditorTool.TEXT -> TransformGizmo(c, p, pos)
+                c.activeTool == EditorTool.MASK -> MaskGizmo(c, p, pos)
+                c.activeTool == EditorTool.TRACK -> TrackGizmo(c, p, pos)
+                else -> TapToPlay(c)
             }
-
             GuidesOverlay(c, aspect)
+            if (c.showScopes) {
+                val data by scopes.collectAsState()
+                ScopesView(data, Modifier.align(Alignment.TopEnd).padding(6.dp))
+            }
         }
     }
 }
 
-/** Finger painting surface for the roto brush, aligned to the media frame. */
 @Composable
-private fun RotoOverlay(c: EditorController, t: EditorController.RotoTarget) {
+private fun TapToPlay(c: EditorController) {
+    Box(Modifier.fillMaxSize().pointerInput(Unit) {
+        awaitEachGesture {
+            awaitFirstDown()
+            val up = waitForUpOrCancellation()
+            if (up != null) c.engine.togglePlay()
+        }
+    })
+}
+
+// ───────────────────────────── Transform gizmo ─────────────────────────────
+
+@Composable
+private fun TransformGizmo(c: EditorController, p: Project, pos: Long) {
+    val accent = LocalAccent.current
+    val clip = c.selectedClip()?.takeIf { it.contains(pos) && p.trackOfClip(it.id)?.acceptsVisual == true }
+    Canvas(
+        Modifier.fillMaxSize()
+            .pointerInput(clip?.id) {
+                if (clip == null) {
+                    awaitEachGesture { awaitFirstDown(); if (waitForUpOrCancellation() != null) c.engine.togglePlay() }
+                    return@pointerInput
+                }
+                val t = EditorController.PTarget.Transform(clip.id)
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    c.engine.pause()
+                    c.beginEdit()
+                    do {
+                        val ev = awaitPointerEvent()
+                        val pan = ev.calculatePan()
+                        val zoom = ev.calculateZoom()
+                        val rot = ev.calculateRotation()
+                        val w = this.size.width.toFloat().coerceAtLeast(1f)
+                        val h = this.size.height.toFloat().coerceAtLeast(1f)
+                        if (pan != Offset.Zero) {
+                            c.setParam(t, "px", c.paramValue(t, "px", 0f) + pan.x / w, 0f)
+                            c.setParam(t, "py", c.paramValue(t, "py", 0f) + pan.y / h, 0f)
+                        }
+                        if (zoom != 1f && zoom.isFinite()) c.setParam(t, "scale", (c.paramValue(t, "scale", 1f) * zoom).coerceIn(0.02f, 20f), 1f)
+                        if (rot != 0f && rot.isFinite()) c.setParam(t, "rot", c.paramValue(t, "rot", 0f) + rot, 0f)
+                        ev.changes.forEach { it.consume() }
+                    } while (ev.changes.any { it.pressed })
+                    c.endEdit("Transform")
+                }
+            },
+    ) {
+        if (clip == null) return@Canvas
+        val g = layerGeo(c, p, clip, pos, size.width.toInt(), size.height.toInt()) ?: return@Canvas
+        val cl = clip.transform
+        val lt = pos - clip.startUs
+        val l = cl.at("cropL", lt, 0f); val tp = cl.at("cropT", lt, 0f); val r = 1f - cl.at("cropR", lt, 0f); val b = 1f - cl.at("cropB", lt, 0f)
+        val pts = listOf(g.toCanvas(l, tp), g.toCanvas(r, tp), g.toCanvas(r, b), g.toCanvas(l, b))
+        val path = Path().apply { moveTo(pts[0].x, pts[0].y); pts.drop(1).forEach { lineTo(it.x, it.y) }; close() }
+        drawPath(path, accent, style = Stroke(2.dp.toPx()))
+        pts.forEach { drawCircle(Color.White, 5.dp.toPx(), it); drawCircle(accent, 5.dp.toPx(), it, style = Stroke(1.5f)) }
+        val anchor = g.toCanvas(cl.at("ax", lt, TransformSpec.def("ax")), cl.at("ay", lt, TransformSpec.def("ay")))
+        drawCircle(accent, 4.dp.toPx(), anchor)
+        drawLine(accent, anchor - Offset(10.dp.toPx(), 0f), anchor + Offset(10.dp.toPx(), 0f), 1.5f)
+        drawLine(accent, anchor - Offset(0f, 10.dp.toPx()), anchor + Offset(0f, 10.dp.toPx()), 1.5f)
+    }
+}
+
+
+// ───────────────────────────── Mask gizmo ─────────────────────────────
+
+@Composable
+private fun MaskGizmo(c: EditorController, p: Project, pos: Long) {
+    val accent = LocalAccent.current
+    val clip = c.selectedClip()?.takeIf { it.contains(pos) }
+    val mask = clip?.masks?.firstOrNull { it.id == c.selectedMaskId } ?: clip?.masks?.lastOrNull()
+    Canvas(
+        Modifier.fillMaxSize()
+            .pointerInput(clip?.id, mask?.id, c.penActive) {
+                if (clip == null) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val g = layerGeo(c, p, clip, c.engine.position.value, this.size.width, this.size.height) ?: return@awaitEachGesture
+                    if (c.penActive) {
+                        if (waitForUpOrCancellation() != null) {
+                            val (u, v) = g.toLayer(down.position)
+                            c.penPoints = c.penPoints + (u to v)
+                        }
+                        return@awaitEachGesture
+                    }
+                    if (mask == null) return@awaitEachGesture
+                    val t = EditorController.PTarget.Mask(clip.id, mask.id)
+                    c.engine.pause()
+                    c.beginEdit()
+                    var last = down.position
+                    do {
+                        val ev = awaitPointerEvent()
+                        val pressed = ev.changes.filter { it.pressed }
+                        if (pressed.size >= 2) {
+                            val zoom = ev.calculateZoom()
+                            val rot = ev.calculateRotation()
+                            if (zoom != 1f && zoom.isFinite()) {
+                                c.setParam(t, "w", (c.paramValue(t, "w", MaskSpec.def("w")) * zoom).coerceIn(0.01f, 3f), MaskSpec.def("w"))
+                                c.setParam(t, "h", (c.paramValue(t, "h", MaskSpec.def("h")) * zoom).coerceIn(0.01f, 3f), MaskSpec.def("h"))
+                            }
+                            if (rot.isFinite() && rot != 0f) c.setParam(t, "rot", c.paramValue(t, "rot", 0f) + rot, 0f)
+                        } else if (pressed.size == 1) {
+                            val now = pressed[0].position
+                            val a = g.toLayer(last)
+                            val b = g.toLayer(now)
+                            last = now
+                            c.setParam(t, "x", c.paramValue(t, "x", 0.5f) + (b.first - a.first), 0.5f)
+                            c.setParam(t, "y", c.paramValue(t, "y", 0.5f) + (b.second - a.second), 0.5f)
+                        }
+                        ev.changes.forEach { it.consume() }
+                    } while (ev.changes.any { it.pressed })
+                    c.endEdit("Move mask")
+                }
+            },
+    ) {
+        if (clip == null) return@Canvas
+        val g = layerGeo(c, p, clip, pos, size.width.toInt(), size.height.toInt()) ?: return@Canvas
+        val lt = pos - clip.startUs
+        val a = p.asset(clip.assetId)
+        val aspect = if (a != null && a.displayHeight > 0) a.displayWidth.toFloat() / a.displayHeight else 1f
+        for (m in clip.masks) {
+            val sel = m.id == mask?.id
+            fun v(id: String) = m.props.at(id, lt, MaskSpec.def(id))
+            val cx = v("x"); val cy = v("y"); val hw = v("w") / 2 + v("expand") / aspect; val hh = v("h") / 2 + v("expand")
+            val r = Math.toRadians(v("rot").toDouble())
+            fun local(lx: Float, ly: Float): Offset {
+                // Rotate in aspect-corrected space, then back to uv.
+                val x = lx * aspect; val y = ly
+                val rx = (x * cos(r) - y * sin(r)).toFloat() / aspect
+                val ry = (x * sin(r) + y * cos(r)).toFloat()
+                return g.toCanvas(cx + rx, cy + ry)
+            }
+            val path = Path()
+            when (m.shape) {
+                MaskShape.RECT -> { val q = listOf(local(-hw, -hh), local(hw, -hh), local(hw, hh), local(-hw, hh)); path.moveTo(q[0].x, q[0].y); q.drop(1).forEach { path.lineTo(it.x, it.y) }; path.close() }
+                MaskShape.ELLIPSE -> { for (k in 0..48) { val th = k / 48.0 * 2 * Math.PI; val o = local((cos(th) * hw).toFloat(), (sin(th) * hh).toFloat()); if (k == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y) }; path.close() }
+                MaskShape.PATH -> {
+                    var i = 0
+                    while (i + 1 < m.path.size) {
+                        val o = local((m.path[i] - 0.5f) * 2 * hw, (m.path[i + 1] - 0.5f) * 2 * hh)
+                        if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y)
+                        i += 2
+                    }
+                    path.close()
+                }
+            }
+            drawPath(path, if (sel) accent else Color.White.copy(alpha = 0.5f), style = Stroke(if (sel) 2.dp.toPx() else 1.dp.toPx(), pathEffect = if (m.invert) PathEffect.dashPathEffect(floatArrayOf(10f, 6f)) else null))
+            if (sel) drawCircle(accent, 5.dp.toPx(), g.toCanvas(cx, cy))
+        }
+        if (c.penActive && c.penPoints.isNotEmpty()) {
+            val pts = c.penPoints.map { g.toCanvas(it.first, it.second) }
+            val path = Path().apply { moveTo(pts[0].x, pts[0].y); pts.drop(1).forEach { lineTo(it.x, it.y) } }
+            drawPath(path, accent, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))))
+            pts.forEach { drawCircle(Color.White, 4.dp.toPx(), it) }
+        }
+    }
+}
+
+// ───────────────────────────── Track gizmo ─────────────────────────────
+
+@Composable
+private fun TrackGizmo(c: EditorController, p: Project, pos: Long) {
+    val accent = LocalAccent.current
+    val clip = c.selectedClip()?.takeIf { it.contains(pos) }
+    Canvas(
+        Modifier.fillMaxSize()
+            .pointerInput(clip?.id) {
+                if (clip == null) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val g = layerGeo(c, p, clip, c.engine.position.value, this.size.width, this.size.height) ?: return@awaitEachGesture
+                    val (u0, v0) = g.toLayer(down.position)
+                    val regions = c.trackRegions.map { android.graphics.RectF(it) }
+                    val idx = regions.indices.minByOrNull { val r = regions[it]; abs(r.centerX() - u0) + abs(r.centerY() - v0) } ?: return@awaitEachGesture
+                    var last = down.position
+                    do {
+                        val ev = awaitPointerEvent()
+                        val pressed = ev.changes.filter { it.pressed }
+                        val r = regions[idx]
+                        if (pressed.size >= 2) {
+                            val z = ev.calculateZoom()
+                            if (z.isFinite() && z != 1f) {
+                                val cx = r.centerX(); val cy = r.centerY()
+                                val hw = (r.width() / 2 * z).coerceIn(0.02f, 0.3f); val hh = (r.height() / 2 * z).coerceIn(0.02f, 0.3f)
+                                r.set(cx - hw, cy - hh, cx + hw, cy + hh)
+                            }
+                        } else if (pressed.size == 1) {
+                            val a = g.toLayer(last); val b = g.toLayer(pressed[0].position)
+                            last = pressed[0].position
+                            r.offset(b.first - a.first, b.second - a.second)
+                        }
+                        c.trackRegions = regions.map { android.graphics.RectF(it) }
+                        ev.changes.forEach { it.consume() }
+                    } while (ev.changes.any { it.pressed })
+                }
+            },
+    ) {
+        if (clip == null) return@Canvas
+        val g = layerGeo(c, p, clip, pos, size.width.toInt(), size.height.toInt()) ?: return@Canvas
+        // Existing track path
+        clip.tracking?.samples?.let { s ->
+            if (s.size > 1) {
+                val path = Path()
+                s.forEachIndexed { i, smp -> val o = g.toCanvas(smp.x, smp.y); if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y) }
+                drawPath(path, Color(0xFFFFD27A).copy(alpha = 0.8f), style = Stroke(1.5.dp.toPx()))
+                clip.tracking?.at(clip.sourceTimeAt(pos))?.let { now -> drawCircle(Color(0xFFFFD27A), 5.dp.toPx(), g.toCanvas(now.x, now.y)) }
+            }
+        }
+        c.trackRegions.forEachIndexed { i, r ->
+            val q = listOf(g.toCanvas(r.left, r.top), g.toCanvas(r.right, r.top), g.toCanvas(r.right, r.bottom), g.toCanvas(r.left, r.bottom))
+            val path = Path().apply { moveTo(q[0].x, q[0].y); q.drop(1).forEach { lineTo(it.x, it.y) }; close() }
+            drawPath(path, accent, style = Stroke(2.dp.toPx()))
+            drawCircle(accent, 3.dp.toPx(), g.toCanvas(r.centerX(), r.centerY()))
+            if (c.trackRegions.size > 1) drawCircle(Color.White, 2.dp.toPx(), q[0] + Offset(6f + i * 0f, 6f))
+        }
+    }
+}
+
+// ───────────────────────────── Eyedropper ─────────────────────────────
+
+@Composable
+private fun EyedropperOverlay(c: EditorController, p: Project, pos: Long) {
+    val clip = c.selectedClip()
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.15f))
+            .pointerInput(clip?.id) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    if (waitForUpOrCancellation() == null) return@awaitEachGesture
+                    val cb = c.pickColorFor ?: return@awaitEachGesture
+                    c.pickColorFor = null
+                    val cl = clip ?: return@awaitEachGesture
+                    val g = layerGeo(c, p, cl, pos, this.size.width, this.size.height) ?: return@awaitEachGesture
+                    val (u, v) = g.toLayer(down.position)
+                    c.pickColor(u.coerceIn(0f, 1f), v.coerceIn(0f, 1f), cb)
+                }
+            },
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Text("Tap the color to key", color = Color.White, fontSize = 12.sp,
+            modifier = Modifier.padding(8.dp).background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 5.dp))
+    }
+}
+
+// ───────────────────────────── Roto ─────────────────────────────
+
+@Composable
+private fun RotoOverlay(c: EditorController, p: Project, t: EditorController.RotoTarget, pos: Long) {
     val accent = LocalAccent.current
     val stroke = remember { mutableStateListOf<Offset>() }
     var touching by remember { mutableStateOf(false) }
@@ -183,73 +414,110 @@ private fun RotoOverlay(c: EditorController, t: EditorController.RotoTarget) {
                         val ev = awaitPointerEvent()
                         val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
                         if (!ch.pressed) break
-                        val last = stroke.last()
-                        if ((ch.position - last).getDistance() > 2f) stroke.add(ch.position)
+                        if ((ch.position - stroke.last()).getDistance() > 2f) stroke.add(ch.position)
                         ch.consume()
                     }
                     touching = false
-                    val w = size.width.toFloat().coerceAtLeast(1f)
-                    val h = size.height.toFloat().coerceAtLeast(1f)
-                    val pts = stroke.map { (it.x / w).coerceIn(-0.1f, 1.1f) to (it.y / h).coerceIn(-0.1f, 1.1f) }
-                    c.applyRotoStroke(pts)
+                    val g = layerGeo(c, p, t.clip, c.engine.position.value, this.size.width, this.size.height)
+                    if (g != null) c.applyRotoStroke(stroke.map { g.toLayer(it) })
                 }
             },
     ) {
-        // Committed mask, tinted (AE-style overlay) while painting.
+        val g = layerGeo(c, p, t.clip, pos, size.width.toInt(), size.height.toInt()) ?: return@Canvas
+        val q = listOf(g.toCanvas(0f, 0f), g.toCanvas(1f, 0f), g.toCanvas(1f, 1f), g.toCanvas(0f, 1f))
         if (showTint && mask != null) {
-            drawImage(
-                mask.asImageBitmap(),
-                srcOffset = IntOffset.Zero,
-                srcSize = IntSize(mask.width, mask.height),
-                dstOffset = IntOffset.Zero,
-                dstSize = IntSize(size.width.toInt(), size.height.toInt()),
-                colorFilter = ColorFilter.tint(accent.copy(alpha = 0.5f)),
-            )
+            drawIntoCanvas { canvas ->
+                val m = Matrix()
+                val w = mask.width.toFloat(); val h = mask.height.toFloat()
+                m.setPolyToPoly(floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h), 0, floatArrayOf(q[0].x, q[0].y, q[1].x, q[1].y, q[2].x, q[2].y, q[3].x, q[3].y), 0, 4)
+                val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+                    colorFilter = PorterDuffColorFilter(accent.copy(alpha = 0.5f).toArgb(), PorterDuff.Mode.SRC_IN)
+                }
+                canvas.nativeCanvas.drawBitmap(mask, m, paint)
+            }
         }
-        // Live stroke preview
         if (stroke.isNotEmpty()) {
             val path = Path().apply {
                 moveTo(stroke[0].x, stroke[0].y)
                 for (i in 1 until stroke.size) lineTo(stroke[i].x, stroke[i].y)
                 if (lasso && !touching) close()
             }
-            if (lasso) {
-                drawPath(path, inkColor, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))))
-            } else {
-                drawPath(
-                    path, inkColor.copy(alpha = 0.55f),
-                    style = Stroke(width = c.rotoBrush * size.width, cap = StrokeCap.Round, join = StrokeJoin.Round),
-                )
-            }
-            if (touching && !lasso) {
-                drawCircle(Color.White.copy(alpha = 0.9f), c.rotoBrush * size.width / 2f, stroke.last(), style = Stroke(1.5f))
-            }
+            // Brush width on screen = brush fraction × layer width on screen.
+            val layerW = (q[1] - q[0]).getDistance()
+            if (lasso) drawPath(path, inkColor, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))))
+            else drawPath(path, inkColor.copy(alpha = 0.55f), style = Stroke(width = c.rotoBrush * layerW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            if (touching && !lasso) drawCircle(Color.White.copy(alpha = 0.9f), c.rotoBrush * layerW / 2f, stroke.last(), style = Stroke(1.5f))
         }
-        // Frame outline so the paintable area is obvious.
-        drawRect(accent.copy(alpha = 0.6f), Offset.Zero, Size(size.width, size.height), style = Stroke(1.5f))
+        val outline = Path().apply { moveTo(q[0].x, q[0].y); q.drop(1).forEach { lineTo(it.x, it.y) }; close() }
+        drawPath(outline, accent.copy(alpha = 0.6f), style = Stroke(1.5f))
     }
-    // Clear the drawn stroke once the new mask has been committed.
     LaunchedEffect(c.rotoVersion) { if (!touching) stroke.clear() }
 }
 
-@Composable
-private fun Checkerboard() {
-    Canvas(Modifier.fillMaxSize()) {
-        val cell = 12.dp.toPx()
-        drawRect(Color(0xFF2B2B30))
-        var y = 0f
-        var row = 0
-        while (y < size.height) {
-            var x = if (row % 2 == 0) 0f else cell
-            while (x < size.width) {
-                drawRect(Color(0xFF38383E), Offset(x, y), Size(cell, cell))
-                x += cell * 2
+// ───────────────────────────── Scopes ─────────────────────────────
+
+/** Histogram (RGB + luma), waveform and vectorscope computed from a 256-px canvas copy. */
+class ScopeData(val hist: Array<IntArray>, val histMax: Int, val waveform: ImageBitmap, val vector: ImageBitmap) {
+    companion object {
+        fun compute(bytes: ByteArray, w: Int, h: Int): ScopeData {
+            val hist = Array(4) { IntArray(256) }
+            val wf = IntArray(w * 128)
+            val vs = IntArray(128 * 128)
+            for (y in 0 until h) for (x in 0 until w) {
+                val i = (y * w + x) * 4
+                val r = bytes[i].toInt() and 0xFF; val g = bytes[i + 1].toInt() and 0xFF; val b = bytes[i + 2].toInt() and 0xFF
+                val l = (0.2126f * r + 0.7152f * g + 0.0722f * b).toInt().coerceIn(0, 255)
+                hist[0][r]++; hist[1][g]++; hist[2][b]++; hist[3][l]++
+                wf[(127 - l / 2) * w + x]++
+                val cb = (-0.1687f * r - 0.3313f * g + 0.5f * b) / 255f
+                val cr = (0.5f * r - 0.4187f * g - 0.0813f * b) / 255f
+                val vx = ((cb + 0.5f) * 127).toInt().coerceIn(0, 127)
+                val vy = ((0.5f - cr) * 127).toInt().coerceIn(0, 127)
+                vs[vy * 128 + vx]++
             }
-            y += cell
-            row++
+            val hm = max(1, (0 until 4).maxOf { k -> hist[k].drop(2).dropLast(2).maxOrNull() ?: 1 })
+            fun toBmp(data: IntArray, bw: Int, bh: Int, tint: Int): ImageBitmap {
+                val px = IntArray(data.size) { k ->
+                    val v = (kotlin.math.sqrt(data[k].toFloat()) * 40f).toInt().coerceIn(0, 255)
+                    if (v == 0) 0 else (v shl 24) or tint
+                }
+                return Bitmap.createBitmap(px, bw, bh, Bitmap.Config.ARGB_8888).asImageBitmap()
+            }
+            return ScopeData(hist, hm, toBmp(wf, w, 128, 0x9FE8B0), toBmp(vs, 128, 128, 0xFFFFFF))
         }
     }
 }
+
+@Composable
+private fun ScopesView(d: ScopeData?, modifier: Modifier) {
+    if (d == null) return
+    val measurer = rememberTextMeasurer()
+    Column(modifier.clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.72f)).padding(4.dp)) {
+        Canvas(Modifier.size(120.dp, 54.dp)) {
+            val cols = listOf(Color(0xFFFF6B6B), Color(0xFF6BFF8F), Color(0xFF6BA8FF), Color.White)
+            for (k in 0 until 4) {
+                val path = Path()
+                for (i in 0 until 256) {
+                    val x = i / 255f * size.width
+                    val y = size.height - (d.hist[k][i].toFloat() / d.histMax).coerceAtMost(1f) * size.height
+                    if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(path, cols[k].copy(alpha = if (k == 3) 0.9f else 0.6f), style = Stroke(1f))
+            }
+            label(measurer, "Histogram")
+        }
+        Row {
+            Image(d.waveform, null, Modifier.size(84.dp, 54.dp))
+            Image(d.vector, null, Modifier.size(54.dp).padding(start = 4.dp))
+        }
+    }
+}
+
+private fun DrawScope.label(m: androidx.compose.ui.text.TextMeasurer, s: String) {
+    drawText(m.measure(s, TextStyle(color = Color.White.copy(alpha = 0.6f), fontSize = 7.sp)), topLeft = Offset(2f, 1f))
+}
+
+// ───────────────────────────── Guides ─────────────────────────────
 
 /** Grid, center, title/action safe and short-form platform UI zones. Never rendered into export. */
 @Composable

@@ -13,8 +13,8 @@ android {
         applicationId = "com.amiri.cut"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0-roto"
+        versionCode = 4
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -79,7 +79,6 @@ dependencies {
     val media3 = "1.6.1"
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-common:$media3")
-    implementation("androidx.media3:media3-effect:$media3")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")

@@ -161,6 +161,8 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var rename by remember { mutableStateOf(false) }
     var guides by remember { mutableStateOf(false) }
+    var export by remember { mutableStateOf(false) }
+    val accent = LocalAccent.current
     Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         IconAction(Icons.AutoMirrored.Outlined.ArrowBack, "Save and close", onClick = onBack)
         Column(Modifier.weight(1f).clickable { rename = true }.padding(horizontal = 6.dp)) {
@@ -172,6 +174,10 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
         }
         IconAction(Icons.AutoMirrored.Outlined.Undo, "Undo", enabled = c.canUndo) { c.undo() }
         IconAction(Icons.AutoMirrored.Outlined.Redo, "Redo", enabled = c.canRedo) { c.redo() }
+        Box(
+            Modifier.padding(horizontal = 4.dp).glassAccent(accent, RoundedCornerShape(12.dp))
+                .clickable { c.engine.pause(); export = true }.padding(horizontal = 12.dp, vertical = 7.dp),
+        ) { Text("Export", color = Amiri.TextPrimary, fontSize = 13.sp) }
         Box {
             IconAction(Icons.Outlined.GridOn, "Guides and project", onClick = { guides = true })
             DropdownMenu(expanded = guides, onDismissRequest = { guides = false }) {
@@ -181,10 +187,12 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
                 CheckItem("Title safe", c.showTitleSafe) { c.showTitleSafe = !c.showTitleSafe }
                 CheckItem("Reels / Shorts / TikTok / YouTube zones", c.showPlatformZones) { c.showPlatformZones = !c.showPlatformZones }
                 HorizontalDivider(color = Amiri.Line)
-                DropdownMenuItem(
-                    text = { Text("Scopes (histogram, waveform, vectorscope) — Stage 6", color = Amiri.TextTertiary) },
-                    enabled = false, onClick = {},
-                )
+                CheckItem("Scopes (histogram · waveform · vectorscope)", c.showScopes) { c.showScopes = !c.showScopes }
+                HorizontalDivider(color = Amiri.Line)
+                com.amiri.cut.storage.PreviewQuality.entries.forEach { q ->
+                    CheckItem("Preview quality: ${q.label}", c.app.settings.previewQuality == q) { c.app.settings.updatePreviewQuality(q) }
+                }
+                CheckItem("Proxy mode (use proxies when built)", c.app.settings.proxyMode) { c.app.settings.updateProxyMode(!c.app.settings.proxyMode) }
                 HorizontalDivider(color = Amiri.Line)
                 DropdownMenuItem(
                     text = { Text("Save project") },
@@ -197,6 +205,7 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
     if (rename) {
         TextInputDialog("Rename project", p.name, onDismiss = { rename = false }) { rename = false; c.rename(it) }
     }
+    if (export) ExportSheet(c) { export = false }
 }
 
 @Composable

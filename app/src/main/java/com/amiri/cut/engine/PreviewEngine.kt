@@ -2,20 +2,24 @@ package com.amiri.cut.engine
 
 import android.content.Context
 import android.os.SystemClock
+import android.view.Surface
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import com.amiri.cut.core.effects.AudioSpec
 import com.amiri.cut.core.model.Clip
+import com.amiri.cut.core.model.ClipKind
 import com.amiri.cut.core.model.MediaAsset
 import com.amiri.cut.core.model.MediaType
 import com.amiri.cut.core.model.Project
 import com.amiri.cut.core.model.Track
 import com.amiri.cut.core.model.TrackKind
 import com.amiri.cut.core.time.FrameTime
-import com.amiri.cut.core.timeline.TimelineOps
+import com.amiri.cut.render.RenderOptions
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -25,56 +29,35 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.min
+
+/** Snapshot the GL renderer draws: which project, which time, which player slot shows which clip. */
+class FrameState(
+    val project: Project,
+    val timeUs: Long,
+    val slotOfClip: Map<String, Int>,
+    val options: RenderOptions,
+)
 
 /**
- * Stage-1 preview engine.
- *
- * The timeline owns the clock. Media3 ExoPlayer instances (hardware MediaCodec
- * decoders) are "slaves" that are loaded, seeked and started to match the
- * timeline position:
- *
- *  - one video player renders the top-most visible visual clip
- *  - one audio player per audio track plays that track's clip
- *
- * While a video clip is playing, the clock follows the video player's own
- * position (so picture never drifts); in gaps and on stills it runs on the
- * system monotonic clock. Contiguous clips cut from the same source (e.g. after
- * Split) continue without re-seeking.
- *
- * Every ExoPlayer here can later receive the same Media3 GL video effects used by
- * the Transformer export (Stage 7/11), which is how Preview ≈ Final Render.
+ * Preview engine. The timeline owns the clock; hardware-decoding ExoPlayer instances are
+ * slaved to it. Up to [SLOTS] visible video layers decode at once, each into its own
+ * SurfaceTexture owned by the GL renderer, which composites every layer (videos, photos,
+ * text, effects, adjustment layers) with the same Compositor used for export.
  *
  * Must be used from the main thread.
  */
 @OptIn(UnstableApi::class)
 class PreviewEngine(private val context: Context) {
 
-    sealed interface Visual {
-        data object None : Visual
-        data class Video(val clipId: String, val assetId: String) : Visual
-        data class Image(val asset: MediaAsset, val clipId: String) : Visual
-    }
-
     private class Slave(val player: ExoPlayer) {
         var uri: String? = null
         var clipId: String? = null
+        var speed: Float = 1f
     }
 
     private val scope = MainScope()
-
-    /** GPU roto mask state read by [RotoMaskEffect] on the GL thread. */
-    val roto = RotoRuntime()
-
-    /** Supplies the roto mask bitmap for a clip at a source time (set by the editor). */
-    var maskProvider: ((Clip, Long) -> android.graphics.Bitmap?)? = null
-
-    /** True while the roto tool wants the untouched frame. */
-    var rotoBypass: Boolean
-        get() = roto.bypass
-        set(v) { if (roto.bypass != v) { roto.bypass = v; refreshFrame() } }
-
-    private val video = Slave(newPlayer().apply { setVideoEffects(listOf(RotoMaskEffect(roto))) })
-    val videoPlayer: ExoPlayer get() = video.player
+    private val slots = List(SLOTS) { Slave(newPlayer()) }
     private val audio = HashMap<String, Slave>()
 
     private var project: Project? = null
@@ -83,23 +66,42 @@ class PreviewEngine(private val context: Context) {
     val position: StateFlow<Long> = _position
     private val _playing = MutableStateFlow(false)
     val playing: StateFlow<Boolean> = _playing
-    private val _visual = MutableStateFlow<Visual>(Visual.None)
-    val visual: StateFlow<Visual> = _visual
+
+    /** Latest state for the renderer (read from the GL thread). */
+    @Volatile var frameState: FrameState? = null
+        private set
+
+    /** Called whenever a new frame should be drawn (renderer.requestRender). */
+    @Volatile var onInvalidate: (() -> Unit)? = null
+
+    /** Render options set by the editor (before/after, roto painting). */
+    var options: RenderOptions = RenderOptions(checker = true)
+        set(v) {
+            field = v
+            publish(_position.value)
+        }
+
+    /** Use proxy files for decoding when available. */
+    var useProxies: Boolean = false
 
     private var clockJob: Job? = null
     private var baseUs = 0L
     private var baseNanos = 0L
     private var pendingScrub = false
+    private var lastAssign: Map<String, Int> = emptyMap()
+    private var primarySlot = -1
 
     init {
-        video.player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY && pendingScrub && !_playing.value) {
-                    pendingScrub = false
-                    sync(_position.value, playing = false)
+        slots.forEach { s ->
+            s.player.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY && pendingScrub && !_playing.value) {
+                        pendingScrub = false
+                        sync(_position.value, playing = false)
+                    }
                 }
-            }
-        })
+            })
+        }
     }
 
     private fun newPlayer(): ExoPlayer = ExoPlayer.Builder(context)
@@ -108,6 +110,19 @@ class PreviewEngine(private val context: Context) {
             repeatMode = Player.REPEAT_MODE_OFF
             setSeekParameters(SeekParameters.EXACT)
         }
+
+    // ───────────────────────── surfaces (from the GL renderer) ─────────────────────────
+
+    fun attachSurfaces(list: List<Surface>) {
+        slots.forEachIndexed { i, s -> list.getOrNull(i)?.let { s.player.setVideoSurface(it) } }
+        // Decode the visible frames again into the new surfaces.
+        slots.forEach { it.uri = null; it.clipId = null }
+        sync(_position.value, _playing.value, forceSeek = true)
+    }
+
+    fun detachSurfaces() {
+        slots.forEach { it.player.clearVideoSurface() }
+    }
 
     // ───────────────────────── public API ─────────────────────────
 
@@ -126,7 +141,7 @@ class PreviewEngine(private val context: Context) {
         if (_position.value >= p.durationUs - frame) _position.value = 0
         _playing.value = true
         rebase(_position.value)
-        sync(_position.value, playing = true)
+        sync(_position.value, playing = true, forceSeek = true)
         clockJob?.cancel()
         clockJob = scope.launch {
             while (isActive && _playing.value) {
@@ -142,13 +157,11 @@ class PreviewEngine(private val context: Context) {
         clockJob?.cancel()
         clockJob = null
         val p = project
-        // Land on an exact frame so edits made while paused are frame-accurate.
         val q = if (p != null) FrameTime.quantize(_position.value, p.settings.fps) else _position.value
         _position.value = q
         sync(q, playing = false)
     }
 
-    /** Moves the playhead. While paused the preview shows the exact frame (latest-wins scrubbing). */
     fun seekTo(us: Long) {
         val p = project ?: return
         val q = FrameTime.quantize(us.coerceIn(0, p.durationUs), p.settings.fps)
@@ -158,8 +171,9 @@ class PreviewEngine(private val context: Context) {
             sync(q, playing = true, forceSeek = true)
             return
         }
-        if (video.uri != null && video.player.playbackState == Player.STATE_BUFFERING) {
+        if (slots.any { it.clipId != null && it.player.playbackState == Player.STATE_BUFFERING }) {
             pendingScrub = true
+            publish(q)
         } else {
             sync(q, playing = false)
         }
@@ -172,12 +186,16 @@ class PreviewEngine(private val context: Context) {
         seekTo(FrameTime.fromFrame(f.coerceAtLeast(0), p.settings.fps))
     }
 
+    /** Redraws the current frame (after a project/option change while paused). */
+    fun refreshFrame() = publish(_position.value)
+
     fun release() {
         clockJob?.cancel()
         scope.cancel()
-        video.player.release()
+        slots.forEach { it.player.release() }
         audio.values.forEach { it.player.release() }
         audio.clear()
+        onInvalidate = null
     }
 
     // ───────────────────────── clock ─────────────────────────
@@ -190,17 +208,18 @@ class PreviewEngine(private val context: Context) {
     private fun tick() {
         val p = project ?: return
         var pos = baseUs + (SystemClock.elapsedRealtimeNanos() - baseNanos) / 1000
-        val activeClip = video.clipId?.let { id -> p.clip(id) }
-        if (activeClip != null && _visual.value is Visual.Video) {
-            val state = video.player.playbackState
-            if (state == Player.STATE_BUFFERING) {
-                // Hold the clock until the decoder delivers frames.
-                rebase(_position.value)
-                return
-            }
-            if (video.player.isPlaying) {
-                val derived = activeClip.startUs + (video.player.currentPosition * 1000 - activeClip.sourceInUs)
-                if (abs(derived - pos) > 40_000 && derived >= activeClip.startUs) {
+        // Hold the clock while a visible layer's decoder is still buffering.
+        if (lastAssign.values.any { slots[it].player.playbackState == Player.STATE_BUFFERING }) {
+            rebase(_position.value)
+            return
+        }
+        val ps = primarySlot
+        if (ps >= 0) {
+            val s = slots[ps]
+            val clip = s.clipId?.let { p.clip(it) }
+            if (clip != null && clip.ramp == null && s.player.isPlaying) {
+                val derived = clip.startUs + clip.sourceToTimeline(s.player.currentPosition * 1000 - clip.sourceInUs)
+                if (abs(derived - pos) > 40_000 && derived >= clip.startUs) {
                     rebase(derived)
                     pos = derived
                 }
@@ -217,62 +236,59 @@ class PreviewEngine(private val context: Context) {
 
     // ───────────────────────── slaving ─────────────────────────
 
+    private fun publish(pos: Long) {
+        val p = project ?: return
+        frameState = FrameState(p, pos, lastAssign, options)
+        onInvalidate?.invoke()
+    }
+
     private fun sync(pos: Long, playing: Boolean, forceSeek: Boolean = false) {
         val p = project ?: return
-        syncVisual(p, pos, playing, forceSeek)
+        syncVideo(p, pos, playing, forceSeek)
         syncAudio(p, pos, playing, forceSeek)
+        publish(pos)
     }
 
-    private fun syncVisual(p: Project, pos: Long, playing: Boolean, forceSeek: Boolean) {
-        val top = TimelineOps.topVisualClipAt(p, pos)
-        val asset = top?.second?.let { p.asset(it.assetId) }
-        if (top == null || asset == null) {
-            _visual.value = Visual.None
-            video.clipId = null
-            video.player.playWhenReady = false
-            return
-        }
-        val (track, clip) = top
-        when (asset.type) {
-            MediaType.IMAGE -> {
-                video.clipId = null
-                video.player.playWhenReady = false
-                val cur = _visual.value
-                if (cur !is Visual.Image || cur.asset.id != asset.id || cur.clipId != clip.id) _visual.value = Visual.Image(asset, clip.id)
-            }
-            MediaType.VIDEO -> {
-                updateRoto(clip, asset, pos)
-                drive(video, track, clip, asset, pos, playing, forceSeek, toleranceUs = 80_000)
-                val cur = _visual.value
-                if (cur !is Visual.Video || cur.clipId != clip.id) _visual.value = Visual.Video(clip.id, asset.id)
-            }
-            MediaType.AUDIO -> Unit
-        }
-    }
+    private fun uriOf(a: MediaAsset): String = a.proxyUri?.takeIf { useProxies } ?: a.uri
 
-    private fun updateRoto(clip: Clip, asset: MediaAsset, pos: Long) {
-        roto.rotation = asset.rotation
-        val r = clip.roto
-        if (r == null || !r.enabled || r.keys.isEmpty()) {
-            roto.publish(null)
-            return
+    private fun syncVideo(p: Project, pos: Long, playing: Boolean, forceSeek: Boolean) {
+        val vids = ArrayList<Triple<Track, Clip, MediaAsset>>()
+        for (t in p.tracks) {
+            if (!t.acceptsVisual || t.hidden) continue
+            val c = t.clipAt(pos) ?: continue
+            if (c.kind != ClipKind.MEDIA) continue
+            val a = p.asset(c.assetId) ?: continue
+            if (a.type != MediaType.VIDEO) continue
+            vids += Triple(t, c, a)
+            if (vids.size == SLOTS) break
         }
-        roto.invert = r.invert
-        roto.publish(maskProvider?.invoke(clip, clip.sourceTimeAt(pos)))
-    }
-
-    /** Re-renders the current frame (e.g. after the mask changed while paused). */
-    fun refreshFrame() {
-        val p = project ?: return
-        if (_playing.value) return
-        val top = TimelineOps.topVisualClipAt(p, _position.value) ?: return
-        p.asset(top.second.assetId)?.let { updateRoto(top.second, it, _position.value) }
-        if (video.uri != null) video.player.seekTo(video.player.currentPosition)
+        val assign = HashMap<String, Int>()
+        val used = BooleanArray(SLOTS)
+        for ((_, c, _) in vids) {
+            val i = slots.indexOfFirst { it.clipId == c.id }
+            if (i >= 0 && !used[i]) { assign[c.id] = i; used[i] = true }
+        }
+        for ((_, c, a) in vids) {
+            if (c.id in assign) continue
+            var i = (0 until SLOTS).firstOrNull { !used[it] && slots[it].uri == uriOf(a) } ?: -1
+            if (i < 0) i = (0 until SLOTS).firstOrNull { !used[it] && slots[it].clipId == null } ?: -1
+            if (i < 0) i = (0 until SLOTS).firstOrNull { !used[it] } ?: -1
+            if (i >= 0) { assign[c.id] = i; used[i] = true }
+        }
+        for (i in 0 until SLOTS) if (!used[i]) {
+            slots[i].clipId = null
+            if (slots[i].player.playWhenReady) slots[i].player.playWhenReady = false
+        }
+        for ((t, c, a) in vids) {
+            val i = assign[c.id] ?: continue
+            drive(slots[i], t, c, a, pos, playing, forceSeek, toleranceUs = 80_000)
+        }
+        primarySlot = vids.lastOrNull()?.let { assign[it.second.id] } ?: -1
+        lastAssign = assign
     }
 
     private fun syncAudio(p: Project, pos: Long, playing: Boolean, forceSeek: Boolean) {
         val audioTracks = p.tracks.filter { it.kind == TrackKind.AUDIO }
-        // Release players of tracks that no longer exist.
         val ids = audioTracks.map { it.id }.toSet()
         audio.keys.filter { it !in ids }.forEach { id -> audio.remove(id)?.player?.release() }
         for (t in audioTracks) {
@@ -291,25 +307,47 @@ class PreviewEngine(private val context: Context) {
         s: Slave, track: Track, clip: Clip, asset: MediaAsset,
         pos: Long, playing: Boolean, forceSeek: Boolean, toleranceUs: Long,
     ) {
+        val uri = uriOf(asset)
         val srcUs = clip.sourceTimeAt(pos).coerceIn(0, maxOf(0, asset.durationUs - 1))
-        val targetMs = (srcUs + 999) / 1000 // ceil → lands on the frame that starts at srcUs
-        if (s.uri != asset.uri) {
-            s.player.setMediaItem(MediaItem.fromUri(asset.uri), targetMs)
+        val targetMs = (srcUs + 999) / 1000
+        if (s.uri != uri) {
+            s.player.setMediaItem(MediaItem.fromUri(uri), targetMs)
             s.player.prepare()
-            s.uri = asset.uri
+            s.uri = uri
         } else {
             val curMs = s.player.currentPosition
             val needSeek = when {
                 forceSeek -> true
                 !playing -> curMs != targetMs
-                // Continuing playback (same clip or a contiguous cut of the same source).
                 else -> s.clipId != clip.id && abs(curMs * 1000 - srcUs) > toleranceUs ||
                     abs(curMs * 1000 - srcUs) > toleranceUs * 4
             }
             if (needSeek) s.player.seekTo(targetMs)
         }
         s.clipId = clip.id
-        s.player.volume = if (track.muted) 0f else clip.volume.coerceIn(0f, 1f)
+        s.player.volume = gainAt(track, clip, pos).coerceIn(0f, 1f)
+        val sp = clip.speedAt(pos).coerceIn(0.1f, 8f)
+        if (abs(sp - s.speed) > 0.01f) {
+            s.player.playbackParameters = PlaybackParameters(sp)
+            s.speed = sp
+        }
         if (s.player.playWhenReady != playing) s.player.playWhenReady = playing
+    }
+
+    companion object {
+        const val SLOTS = 4
+
+        /** Clip gain at [pos]: volume keyframes × fade envelope × mute (0..2). */
+        fun gainAt(track: Track, clip: Clip, pos: Long): Float {
+            if (track.muted || clip.muted) return 0f
+            val local = pos - clip.startUs
+            val vol = clip.audio.at("volume", local, AudioSpec.def("volume")) * clip.volume
+            val fi = clip.audio.at("fadeIn", local, 0f) * 1_000_000f
+            val fo = clip.audio.at("fadeOut", local, 0f) * 1_000_000f
+            var g = vol
+            if (fi > 1f) g *= min(1f, local / fi)
+            if (fo > 1f) g *= min(1f, (clip.durationUs - local) / fo)
+            return g.coerceIn(0f, 2f)
+        }
     }
 }

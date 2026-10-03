@@ -1,6 +1,8 @@
 package com.amiri.cut.core.timeline
 
 import com.amiri.cut.core.model.Clip
+import com.amiri.cut.core.model.ClipKind
+import com.amiri.cut.core.model.TextSpec
 import com.amiri.cut.core.model.MediaAsset
 import com.amiri.cut.core.model.MediaType
 import com.amiri.cut.core.model.Marker
@@ -34,6 +36,13 @@ object TimelineOps {
 
     fun isFree(track: Track, startUs: Long, endUs: Long, ignoreClipId: String? = null): Boolean =
         track.clips.none { it.id != ignoreClipId && it.startUs < endUs && startUs < it.endUs }
+
+    /** Can [clip] live on [track]? Text → Text/Overlay; adjustment → any visual track; media by type. */
+    fun compatibleClip(track: Track, clip: Clip, asset: MediaAsset?): Boolean = when (clip.kind) {
+        ClipKind.TEXT -> track.kind == TrackKind.TEXT || track.kind == TrackKind.OVERLAY
+        ClipKind.ADJUSTMENT -> track.kind != TrackKind.AUDIO
+        ClipKind.MEDIA -> asset != null && compatible(track, asset)
+    }
 
     fun compatible(track: Track, asset: MediaAsset): Boolean = when (asset.type) {
         MediaType.AUDIO -> track.kind == TrackKind.AUDIO
@@ -160,7 +169,7 @@ object TimelineOps {
         if (at - clip.startUs < f || clip.endUs - at < f) return null
         val sourceAt = clip.sourceTimeAt(at)
         val left = clip.copy(sourceOutUs = sourceAt)
-        val right = clip.copy(id = newId(), startUs = at, sourceInUs = sourceAt)
+        val right = clip.copy(id = newId(), startUs = at, sourceInUs = sourceAt).shiftKeys(-(at - clip.startUs))
         val proj = p.mapTrack(track.id) { t -> t.withClips(t.clips.flatMap { if (it.id == clipId) listOf(left, right) else listOf(it) }) }
         return proj to right
     }
@@ -221,8 +230,8 @@ object TimelineOps {
         val (src, clip) = editable(p, clipId) ?: return null
         val target = p.track(targetTrackId) ?: return null
         if (target.locked) return null
-        val asset = p.asset(clip.assetId) ?: return null
-        if (!compatible(target, asset)) return null
+        val asset = p.asset(clip.assetId)
+        if (!compatibleClip(target, clip, asset)) return null
         val start = FrameTime.quantize(newStartUs, p.settings.fps)
         if (start < 0) return null
         val moved = clip.copy(startUs = start)
@@ -235,31 +244,31 @@ object TimelineOps {
     /** Computes the clip that results from dragging its left edge to [newStartUs]. */
     fun trimmedStart(p: Project, clipId: String, newStartUs: Long): Clip? {
         val (track, clip) = editable(p, clipId) ?: return null
-        val asset = p.asset(clip.assetId) ?: return null
+        val asset = p.asset(clip.assetId)
         val fps = p.settings.fps
         val f = frame(fps)
         val prevEnd = track.clips.filter { it.id != clip.id && it.endUs <= clip.startUs }.maxOfOrNull { it.endUs } ?: 0L
         var start = FrameTime.quantize(newStartUs, fps).coerceIn(prevEnd, clip.endUs - f)
-        if (asset.isStill) {
-            return clip.copy(startUs = start, sourceInUs = 0, sourceOutUs = clip.endUs - start)
+        if (asset == null || asset.isStill) {
+            return clip.copy(startUs = start, sourceInUs = 0, sourceOutUs = clip.endUs - start).shiftKeys(-(start - clip.startUs))
         }
         // Can't extend before the first source frame.
         val minStart = clip.startUs - clip.sourceToTimeline(clip.sourceInUs)
         start = start.coerceAtLeast(minStart)
         val newIn = clip.sourceInUs + clip.timelineToSource(start - clip.startUs)
-        return clip.copy(startUs = start, sourceInUs = newIn.coerceAtLeast(0))
+        return clip.copy(startUs = start, sourceInUs = newIn.coerceAtLeast(0)).shiftKeys(-(start - clip.startUs))
     }
 
     /** Computes the clip that results from dragging its right edge to [newEndUs]. */
     fun trimmedEnd(p: Project, clipId: String, newEndUs: Long): Clip? {
         val (track, clip) = editable(p, clipId) ?: return null
-        val asset = p.asset(clip.assetId) ?: return null
+        val asset = p.asset(clip.assetId)
         val fps = p.settings.fps
         val f = frame(fps)
         val nextStart = track.clips.filter { it.id != clip.id && it.startUs >= clip.endUs }.minOfOrNull { it.startUs } ?: Long.MAX_VALUE
         var end = FrameTime.quantize(newEndUs, fps).coerceIn(clip.startUs + f, nextStart)
-        if (asset.isStill) {
-            return clip.copy(sourceInUs = 0, sourceOutUs = end - clip.startUs)
+        if (asset == null || asset.isStill) {
+            return clip.copy(sourceInUs = 0, sourceOutUs = clip.timelineToSource(end - clip.startUs))
         }
         val maxEnd = clip.startUs + clip.sourceToTimeline(asset.durationUs - clip.sourceInUs)
         end = end.coerceAtMost(maxEnd)
@@ -347,8 +356,94 @@ object TimelineOps {
         for (t in p.tracks) {
             if (!t.acceptsVisual || t.hidden) continue
             val c = t.clipAt(us) ?: continue
+            if (c.kind != ClipKind.MEDIA) continue
             return t to c
         }
         return null
     }
+
+    // ───────────────────────── Stage 2+ clip kinds & ops ─────────────────────────
+
+    private fun freeVisualTrack(p: Project, kinds: List<TrackKind>, start: Long, end: Long): Track? =
+        p.tracks.firstOrNull { it.kind in kinds && !it.locked && isFree(it, start, end) }
+
+    /** Adds a 3 s text clip at [atUs] on a free Text (or Overlay) track, creating one if needed. */
+    fun addText(p: Project, atUs: Long, text: String = "Text", durationUs: Long = 3_000_000L): Pair<Project, Clip> {
+        val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
+        val clip = Clip(
+            id = newId(), assetId = "", name = text.take(24).ifBlank { "Text" },
+            startUs = start, sourceInUs = 0, sourceOutUs = durationUs, text = TextSpec(text = text),
+        )
+        var proj = p
+        val t = freeVisualTrack(proj, listOf(TrackKind.TEXT, TrackKind.OVERLAY), clip.startUs, clip.endUs)
+            ?: run { proj = addTrack(proj, TrackKind.TEXT); proj.tracks.last { it.kind == TrackKind.TEXT } }
+        proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
+        return proj to clip
+    }
+
+    /** Adds an adjustment layer (affects all layers below it) at [atUs]. */
+    fun addAdjustment(p: Project, atUs: Long, durationUs: Long = 5_000_000L): Pair<Project, Clip> {
+        val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
+        val clip = Clip(
+            id = newId(), assetId = "", name = "Adjustment layer",
+            startUs = start, sourceInUs = 0, sourceOutUs = durationUs, adjustment = true,
+        )
+        var proj = p
+        val t = freeVisualTrack(proj, listOf(TrackKind.OVERLAY), clip.startUs, clip.endUs)
+            ?: run { proj = addTrack(proj, TrackKind.OVERLAY); proj.tracks.last { it.kind == TrackKind.OVERLAY } }
+        proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
+        return proj to clip
+    }
+
+    /** Freeze frame: splits at [atUs] and inserts a still of [durationUs], rippling later clips. */
+    fun insertFreeze(p: Project, clipId: String, atUs: Long, still: MediaAsset, durationUs: Long): Pair<Project, Clip>? {
+        val track = p.trackOfClip(clipId) ?: return null
+        if (track.locked) return null
+        val at = FrameTime.quantize(atUs, p.settings.fps)
+        var proj = split(p, clipId, at)?.first ?: p
+        val src = proj.clip(clipId) ?: return null
+        val freeze = Clip(
+            id = newId(), assetId = still.id, name = "Freeze · " + src.name,
+            startUs = at, sourceInUs = 0, sourceOutUs = durationUs,
+            transform = src.transform.shift(-(at - src.startUs)), flipH = src.flipH, flipV = src.flipV,
+            blend = src.blend, effects = src.effects.map { it.copy(props = it.props.shift(-(at - src.startUs))) },
+        )
+        proj = addAsset(proj, still).mapTrack(track.id) { t ->
+            t.withClips(t.clips.map { if (it.startUs >= at) it.copy(startUs = it.startUs + durationUs) else it } + freeze)
+        }
+        return proj to freeze
+    }
+
+    /** Reverse: point the clip at a reversed proxy, mirroring its source range. */
+    fun swapToReversed(p: Project, clipId: String, reversed: MediaAsset, originalId: String): Project? {
+        val track = p.trackOfClip(clipId) ?: return null
+        val c = track.clips.first { it.id == clipId }
+        val dur = reversed.durationUs
+        val updated = c.copy(
+            assetId = reversed.id,
+            sourceInUs = (dur - c.sourceOutUs).coerceAtLeast(0),
+            sourceOutUs = (dur - c.sourceInUs).coerceAtMost(dur),
+            reversedFrom = if (c.reversedFrom == null) originalId else null,
+            roto = null, tracking = null, stab = null,
+        )
+        return addAsset(p, reversed).mapTrack(track.id) { t -> t.copy(clips = t.clips.map { if (it.id == clipId) updated else it }) }
+    }
+
+    /** Changes constant speed, keeping the clip start; refuses if it would overlap the next clip. */
+    fun setSpeed(p: Project, clipId: String, speed: Float): Project? {
+        val (track, clip) = editable(p, clipId) ?: return null
+        val updated = clip.copy(speed = speed.coerceIn(0.05f, 16f))
+        if (!isFree(track, updated.startUs, updated.endUs, ignoreClipId = clipId)) return null
+        return p.mapTrack(track.id) { t -> t.copy(clips = t.clips.map { if (it.id == clipId) updated else it }) }
+    }
+
+    /** Replaces a clip with an updated copy (no overlap check beyond replaceClip's). */
+    fun updateClip(p: Project, clipId: String, f: (Clip) -> Clip): Project? {
+        val track = p.trackOfClip(clipId) ?: return null
+        if (track.locked) return null
+        val c = track.clips.first { it.id == clipId }
+        if (c.locked) return null
+        return replaceClip(p, f(c))
+    }
+
 }

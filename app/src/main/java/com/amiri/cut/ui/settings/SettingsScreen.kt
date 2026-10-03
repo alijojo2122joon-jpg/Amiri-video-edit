@@ -108,6 +108,17 @@ fun SettingsScreen(app: AmiriCutApp, onBack: () -> Unit) {
                 }
 
                 Column {
+                    SectionLabel("Preview")
+                    ChoiceChips(com.amiri.cut.storage.PreviewQuality.entries.toList(), s.previewQuality, { it.label }) { s.updatePreviewQuality(it) }
+                    Gap(h = 6)
+                    ToggleRow("Proxy mode (decode built proxies in preview)", s.proxyMode) { s.updateProxyMode(it) }
+                    Text(
+                        "Half/Quarter render the preview at lower resolution for heavy effects. Export always renders at full quality.",
+                        color = Amiri.TextTertiary, style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                Column {
                     SectionLabel("Editing")
                     ToggleRow("Snapping on timeline", s.snapping) { s.updateSnapping(it) }
                     ToggleRow("Haptic feedback", s.haptics) { s.updateHaptics(it) }

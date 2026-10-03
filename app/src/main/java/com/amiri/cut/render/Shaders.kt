@@ -1,0 +1,664 @@
+package com.amiri.cut.render
+
+/**
+ * GLSL ES 1.00 sources. All layer textures are premultiplied RGBA with the GL
+ * origin (v = 0 at the bottom of the image).
+ */
+object Shaders {
+
+    const val VS = """
+attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+"""
+
+    private const val COMMON = """
+precision highp float;
+varying vec2 vUv;
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+vec3 unpremul(vec4 s) { return s.a > 0.0001 ? s.rgb / s.a : vec3(0.0); }
+"""
+
+    // ───────────────────────── input pass (source → layer, with masks) ─────────────────────────
+
+    private const val MASKS = """
+uniform sampler2D uRoto;
+uniform float uHasRoto;
+uniform float uRotoInvert;
+uniform int uMaskCount;
+uniform vec4 uMaskA[4];
+uniform vec4 uMaskB[4];
+uniform vec4 uMaskC[4];
+uniform sampler2D uPath0;
+uniform sampler2D uPath1;
+uniform float uAspect;
+
+float shapeMask(vec4 A, vec4 B, vec4 C, vec2 p) {
+  vec2 d = p - A.xy;
+  d.x *= uAspect;
+  float cs = cos(-B.x);
+  float sn = sin(-B.x);
+  vec2 q = vec2(cs * d.x - sn * d.y, sn * d.x + cs * d.y);
+  vec2 hs = max(vec2(A.z * uAspect, A.w) * 0.5 + vec2(B.z), vec2(0.0001));
+  float f = max(B.y, 0.0005);
+  float m;
+  if (C.x < 0.5) {
+    vec2 e = abs(q) - hs;
+    float sd = length(max(e, vec2(0.0))) + min(max(e.x, e.y), 0.0);
+    m = 1.0 - smoothstep(-f * 0.5, f * 0.5, sd);
+  } else if (C.x < 1.5) {
+    float k = length(q / hs);
+    float sd = (k - 1.0) * min(hs.x, hs.y);
+    m = 1.0 - smoothstep(-f * 0.5, f * 0.5, sd);
+  } else {
+    vec2 uv = q / (2.0 * hs) + 0.5;
+    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    float t = C.w < 0.5 ? texture2D(uPath0, uv).a : texture2D(uPath1, uv).a;
+    m = t * inside;
+  }
+  m *= B.w;
+  if (C.z > 0.5) m = 1.0 - m;
+  return m;
+}
+
+float maskAlpha(vec2 glUv) {
+  vec2 p = vec2(glUv.x, 1.0 - glUv.y);
+  float acc = 1.0;
+  if (uMaskCount > 0) {
+    acc = uMaskC[0].y > 0.5 ? 1.0 : 0.0;
+    for (int i = 0; i < 4; i++) {
+      if (i >= uMaskCount) break;
+      float m = shapeMask(uMaskA[i], uMaskB[i], uMaskC[i], p);
+      float mode = uMaskC[i].y;
+      if (mode < 0.5) acc = max(acc, m);
+      else if (mode < 1.5) acc = acc * (1.0 - m);
+      else acc = min(acc, m);
+    }
+  }
+  if (uHasRoto > 0.5) {
+    float r = texture2D(uRoto, p).a;
+    if (uRotoInvert > 0.5) r = 1.0 - r;
+    acc *= r;
+  }
+  return acc;
+}
+"""
+
+    const val INPUT_OES = "#extension GL_OES_EGL_image_external : require\n" + COMMON + MASKS + """
+uniform samplerExternalOES uTex;
+uniform mat4 uTexMatrix;
+void main() {
+  vec2 tc = (uTexMatrix * vec4(vUv, 0.0, 1.0)).xy;
+  vec4 c = texture2D(uTex, tc);
+  c.a = 1.0;
+  gl_FragColor = c * maskAlpha(vUv);
+}
+"""
+
+    const val INPUT_2D = COMMON + MASKS + """
+uniform sampler2D uTex;
+void main() {
+  vec4 c = texture2D(uTex, vec2(vUv.x, 1.0 - vUv.y));
+  gl_FragColor = c * maskAlpha(vUv);
+}
+"""
+
+    // ───────────────────────── compositing ─────────────────────────
+
+    const val COMPOSITE = COMMON + """
+uniform sampler2D uLayer;
+uniform sampler2D uDst;
+uniform mat3 uInv[12];
+uniform int uSamples;
+uniform vec4 uCrop;
+uniform float uOpacity;
+uniform int uBlend;
+
+vec3 blendF(vec3 b, vec3 s) {
+  if (uBlend == 1) return b + s - b * s;
+  if (uBlend == 2) return min(b + s, vec3(1.0));
+  if (uBlend == 3) return b * s;
+  if (uBlend == 4) return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b));
+  if (uBlend == 5) return (1.0 - 2.0 * s) * b * b + 2.0 * s * b;
+  if (uBlend == 6) return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, s));
+  if (uBlend == 7) return min(b, s);
+  if (uBlend == 8) return max(b, s);
+  return s;
+}
+
+void main() {
+  vec3 p = vec3(gl_FragCoord.xy, 1.0);
+  vec4 acc = vec4(0.0);
+  for (int i = 0; i < 12; i++) {
+    if (i >= uSamples) break;
+    vec3 uv = uInv[i] * p;
+    float inside = step(uCrop.x, uv.x) * step(uv.x, 1.0 - uCrop.z) * step(uCrop.w, uv.y) * step(uv.y, 1.0 - uCrop.y);
+    acc += texture2D(uLayer, uv.xy) * inside;
+  }
+  vec4 src = acc / float(uSamples) * uOpacity;
+  vec4 dst = texture2D(uDst, vUv);
+  if (uBlend == 0) {
+    gl_FragColor = src + dst * (1.0 - src.a);
+  } else {
+    float sa = src.a;
+    float da = dst.a;
+    vec3 cs = sa > 0.0001 ? src.rgb / sa : vec3(0.0);
+    vec3 cb = da > 0.0001 ? dst.rgb / da : vec3(0.0);
+    vec3 rgb = (1.0 - da) * src.rgb + (1.0 - sa) * dst.rgb + sa * da * clamp(blendF(cb, cs), 0.0, 1.0);
+    gl_FragColor = vec4(rgb, sa + da * (1.0 - sa));
+  }
+}
+"""
+
+    const val COPY = COMMON + """
+uniform sampler2D uTex;
+void main() { gl_FragColor = texture2D(uTex, vUv); }
+"""
+
+    const val MIX = COMMON + """
+uniform sampler2D uTex;
+uniform sampler2D uOrig;
+uniform float uAmount;
+void main() { gl_FragColor = mix(texture2D(uOrig, vUv), texture2D(uTex, vUv), uAmount); }
+"""
+
+    const val PRESENT = COMMON + """
+uniform sampler2D uTex;
+uniform float uChecker;
+uniform float uCell;
+void main() {
+  vec4 c = texture2D(uTex, vUv);
+  vec3 bg = vec3(0.0);
+  if (uChecker > 0.5) {
+    vec2 q = floor(gl_FragCoord.xy / uCell);
+    bg = mix(vec3(0.17), vec3(0.22), mod(q.x + q.y, 2.0));
+  }
+  gl_FragColor = vec4(c.rgb + bg * (1.0 - c.a), 1.0);
+}
+"""
+
+    /** 9-tap separable gaussian (sigma ≈ 2 taps); uDir = texel step along one axis. */
+    const val BLUR = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uDir;
+void main() {
+  vec4 s = texture2D(uTex, vUv) * 0.2042;
+  s += (texture2D(uTex, vUv + uDir) + texture2D(uTex, vUv - uDir)) * 0.1802;
+  s += (texture2D(uTex, vUv + uDir * 2.0) + texture2D(uTex, vUv - uDir * 2.0)) * 0.1238;
+  s += (texture2D(uTex, vUv + uDir * 3.0) + texture2D(uTex, vUv - uDir * 3.0)) * 0.0663;
+  s += (texture2D(uTex, vUv + uDir * 4.0) + texture2D(uTex, vUv - uDir * 4.0)) * 0.0276;
+  gl_FragColor = s;
+}
+"""
+
+    // ───────────────────────── color ─────────────────────────
+
+    const val COLOR = COMMON + """
+uniform sampler2D uTex;
+uniform sampler2D uBlurTex;
+uniform sampler2D uCurve;
+uniform vec2 uTexel;
+uniform float uAspect;
+uniform float uExposure;
+uniform float uContrast;
+uniform float uBrightness;
+uniform float uHighlights;
+uniform float uShadows;
+uniform float uWhites;
+uniform float uBlacks;
+uniform float uSaturation;
+uniform float uTemp;
+uniform float uTint;
+uniform float uHslH[6];
+uniform float uHslS[6];
+uniform float uHslL[6];
+uniform vec3 uLift;
+uniform vec3 uGamma;
+uniform vec3 uGain;
+uniform float uVignette;
+uniform float uVigFeather;
+uniform float uSharpen;
+uniform float uBlur;
+uniform float uHasCurve;
+uniform float uHasHsl;
+
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+  vec4 src = texture2D(uTex, vUv);
+  if (uBlur > 0.001) src = mix(src, texture2D(uBlurTex, vUv), clamp(uBlur * 1.5, 0.0, 1.0));
+  if (uSharpen > 0.001) {
+    vec4 n = texture2D(uTex, vUv + vec2(uTexel.x, 0.0)) + texture2D(uTex, vUv - vec2(uTexel.x, 0.0))
+           + texture2D(uTex, vUv + vec2(0.0, uTexel.y)) + texture2D(uTex, vUv - vec2(0.0, uTexel.y));
+    src = clamp(src + (src - n * 0.25) * uSharpen * 2.0, 0.0, 1.0);
+    src.rgb = min(src.rgb, vec3(src.a));
+  }
+  float a = src.a;
+  if (a < 0.0001) { gl_FragColor = vec4(0.0); return; }
+  vec3 c = src.rgb / a;
+
+  c *= exp2(uExposure);
+  c *= vec3(1.0 + 0.18 * uTemp, 1.0 + 0.04 * uTemp - 0.12 * uTint, 1.0 - 0.18 * uTemp);
+  float bp = -uBlacks * 0.12;
+  float wp = 1.0 - uWhites * 0.2;
+  c = (c - bp) / max(wp - bp, 0.05);
+  float l = luma(c);
+  c += uShadows * 0.3 * (1.0 - smoothstep(0.0, 0.5, l));
+  c += uHighlights * 0.3 * smoothstep(0.5, 1.0, l);
+  c = (c - 0.5) * (1.0 + uContrast) + 0.5;
+  c += uBrightness * 0.25;
+  c = c * uGain;
+  c = c + uLift * (1.0 - c);
+  c = pow(max(c, vec3(0.0)), 1.0 / max(uGamma, vec3(0.05)));
+
+  if (uHasHsl > 0.5) {
+    vec3 h = rgb2hsv(clamp(c, 0.0, 1.0));
+    float hue = h.x * 6.0;
+    float dh = 0.0;
+    float ds = 0.0;
+    float dl = 0.0;
+    for (int i = 0; i < 6; i++) {
+      float d = abs(hue - float(i));
+      d = min(d, 6.0 - d);
+      float w = max(0.0, 1.0 - d);
+      dh += w * uHslH[i];
+      ds += w * uHslS[i];
+      dl += w * uHslL[i];
+    }
+    float sat0 = h.y;
+    h.x = fract(h.x + dh / 12.0);
+    h.y = clamp(h.y * (1.0 + ds), 0.0, 1.0);
+    c = hsv2rgb(h) * (1.0 + dl * 0.6 * sat0);
+  }
+
+  float L2 = luma(c);
+  c = mix(vec3(L2), c, 1.0 + uSaturation);
+
+  if (uHasCurve > 0.5) {
+    c = clamp(c, 0.0, 1.0);
+    vec3 m = vec3(texture2D(uCurve, vec2(c.r, 0.5)).a, texture2D(uCurve, vec2(c.g, 0.5)).a, texture2D(uCurve, vec2(c.b, 0.5)).a);
+    c = vec3(texture2D(uCurve, vec2(m.r, 0.5)).r, texture2D(uCurve, vec2(m.g, 0.5)).g, texture2D(uCurve, vec2(m.b, 0.5)).b);
+  }
+
+  if (uVignette > 0.001) {
+    vec2 d = vUv - 0.5;
+    d.x *= uAspect;
+    float r = length(d) / length(vec2(0.5 * uAspect, 0.5));
+    c *= 1.0 - uVignette * smoothstep(1.0 - uVigFeather * 0.9 - 0.05, 1.05, r);
+  }
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0) * a, a);
+}
+"""
+
+    const val LUT = COMMON + """
+uniform sampler2D uTex;
+uniform sampler2D uLut;
+uniform float uSize;
+uniform float uStrength;
+vec3 lut(vec3 c) {
+  float n = uSize;
+  float b = c.b * (n - 1.0);
+  float b0 = floor(b);
+  float b1 = min(b0 + 1.0, n - 1.0);
+  float f = b - b0;
+  float y = (c.g * (n - 1.0) + 0.5) / n;
+  vec2 uv0 = vec2((b0 * n + c.r * (n - 1.0) + 0.5) / (n * n), y);
+  vec2 uv1 = vec2((b1 * n + c.r * (n - 1.0) + 0.5) / (n * n), y);
+  return mix(texture2D(uLut, uv0).rgb, texture2D(uLut, uv1).rgb, f);
+}
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec3 c = clamp(unpremul(s), 0.0, 1.0);
+  c = mix(c, lut(c), uStrength);
+  gl_FragColor = vec4(c * s.a, s.a);
+}
+"""
+
+    const val CHROMA = COMMON + """
+uniform sampler2D uTex;
+uniform vec3 uKey;
+uniform float uTol;
+uniform float uSoft;
+uniform float uSpill;
+uniform float uEdge;
+vec2 cbcr(vec3 c) { return vec2(-0.1687 * c.r - 0.3313 * c.g + 0.5 * c.b, 0.5 * c.r - 0.4187 * c.g - 0.0813 * c.b); }
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec3 c = unpremul(s);
+  float d = distance(cbcr(c), cbcr(uKey));
+  float t0 = uTol * 0.35;
+  float t1 = t0 + uSoft * 0.25 + uEdge * 0.12 + 0.002;
+  float k = smoothstep(t0, t1, d);
+  float spillAmt = uSpill * (1.0 - smoothstep(t0, t1 + 0.3, d));
+  c = mix(c, vec3(luma(c)), spillAmt * 0.85);
+  float a = s.a * k;
+  gl_FragColor = vec4(c * a, a);
+}
+"""
+
+    // ───────────────────────── light ─────────────────────────
+
+    const val GLOW_BRIGHT = COMMON + """
+uniform sampler2D uTex;
+uniform float uThr;
+uniform float uSoft;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec3 c = unpremul(s);
+  float w = smoothstep(uThr, uThr + 0.05 + uSoft * 0.45, luma(c));
+  gl_FragColor = vec4(c * w * s.a, s.a * w);
+}
+"""
+
+    const val GLOW_COMBINE = COMMON + """
+uniform sampler2D uTex;
+uniform sampler2D uGlow;
+uniform vec3 uColor;
+uniform float uIntensity;
+uniform int uMode;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec3 g = texture2D(uGlow, vUv).rgb * uColor * uIntensity;
+  vec3 rgb;
+  if (uMode == 1) rgb = s.rgb + g;
+  else rgb = s.rgb + g * (1.0 - clamp(s.rgb, 0.0, 1.0));
+  float a = clamp(s.a + (1.0 - s.a) * max(max(g.r, g.g), g.b), 0.0, 1.0);
+  gl_FragColor = vec4(min(rgb, vec3(a)), a);
+}
+"""
+
+    const val SWEEP = COMMON + """
+uniform sampler2D uTex;
+uniform float uPos;
+uniform float uAngle;
+uniform float uWidth;
+uniform float uIntensity;
+uniform float uSoft;
+uniform float uOpacity;
+uniform vec3 uColor;
+uniform float uAspect;
+uniform int uMode;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec2 p = vUv - 0.5;
+  p.x *= uAspect;
+  vec2 dir = vec2(cos(uAngle), sin(uAngle));
+  float span = 0.5 * (abs(dir.x) * uAspect + abs(dir.y)) + uWidth;
+  float d = abs(dot(p, dir) - (uPos - 0.5) * 2.0 * span);
+  float band = 1.0 - smoothstep(uWidth * (1.0 - uSoft), uWidth + 0.0001, d);
+  vec3 L = uColor * band * uIntensity * uOpacity * s.a;
+  vec3 rgb = uMode == 1 ? s.rgb + L : s.rgb + L * (1.0 - clamp(s.rgb, 0.0, 1.0));
+  gl_FragColor = vec4(min(rgb, vec3(s.a)), s.a);
+}
+"""
+
+    const val RAYS = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uCenter;
+uniform float uDir;
+uniform float uIntensity;
+uniform float uLength;
+uniform float uDecay;
+uniform float uSoft;
+uniform float uOpacity;
+uniform vec3 uColor;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec2 delta = vUv - uCenter;
+  float cs = cos(uDir);
+  float sn = sin(uDir);
+  delta = vec2(cs * delta.x - sn * delta.y, sn * delta.x + cs * delta.y);
+  delta *= uLength / 48.0;
+  vec2 tc = vUv;
+  float illum = 1.0;
+  float decay = 0.9 + 0.1 * uDecay;
+  vec3 acc = vec3(0.0);
+  float thr = 0.5 - uSoft * 0.35;
+  for (int i = 0; i < 48; i++) {
+    tc -= delta;
+    vec4 t = texture2D(uTex, tc);
+    vec3 c = unpremul(t) * t.a;
+    acc += c * max(luma(c) - thr, 0.0) * illum;
+    illum *= decay;
+  }
+  vec3 rays = acc * (uIntensity * 3.0 / 48.0) * uColor * uOpacity;
+  vec3 rgb = s.rgb + rays * (1.0 - clamp(s.rgb, 0.0, 1.0));
+  float a = clamp(s.a + (1.0 - s.a) * max(max(rays.r, rays.g), rays.b), 0.0, 1.0);
+  gl_FragColor = vec4(min(rgb, vec3(a)), a);
+}
+"""
+
+    const val LEAK = COMMON + """
+uniform sampler2D uTex;
+uniform vec3 uC1;
+uniform vec3 uC2;
+uniform vec3 uC3;
+uniform vec2 uCenter;
+uniform float uTime;
+uniform float uIntensity;
+uniform float uOpacity;
+uniform float uScale;
+uniform float uRot;
+uniform float uSpeed;
+uniform float uAspect;
+uniform int uMode;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec2 p = vUv - uCenter;
+  p.x *= uAspect;
+  float cs = cos(uRot);
+  float sn = sin(uRot);
+  p = vec2(cs * p.x - sn * p.y, sn * p.x + cs * p.y) / max(uScale, 0.05);
+  float t = uTime * uSpeed;
+  vec2 o1 = vec2(-0.35 + sin(t * 0.7) * 0.25, 0.15 + cos(t * 0.5) * 0.2);
+  vec2 o2 = vec2(0.3 + cos(t * 0.45) * 0.3, -0.2 + sin(t * 0.6) * 0.2);
+  vec2 o3 = vec2(sin(t * 0.33) * 0.4, cos(t * 0.27) * 0.35);
+  float b1 = exp(-dot(p - o1, p - o1) * 5.0);
+  float b2 = exp(-dot(p - o2, p - o2) * 7.0);
+  float b3 = exp(-dot(p - o3, p - o3) * 3.5);
+  float streak = exp(-abs(p.y + 0.25 * sin(t * 0.3) + p.x * 0.35) * 6.0) * 0.45;
+  vec3 leak = (uC1 * b1 + uC2 * b2 + uC3 * b3 * 0.7 + uC1 * streak) * uIntensity * uOpacity * s.a;
+  vec3 rgb = uMode == 1 ? s.rgb + leak : s.rgb + leak * (1.0 - clamp(s.rgb, 0.0, 1.0));
+  gl_FragColor = vec4(min(rgb, vec3(s.a)), s.a);
+}
+"""
+
+    // ───────────────────────── film ─────────────────────────
+
+    const val FILM = COMMON + """
+uniform sampler2D uTex;
+uniform sampler2D uBlurTex;
+uniform vec2 uRes;
+uniform float uTime;
+uniform float uAspect;
+uniform float uGrain;
+uniform float uGrainSize;
+uniform float uDust;
+uniform float uScratch;
+uniform float uFlicker;
+uniform float uVignette;
+uniform float uHalation;
+uniform float uFade;
+uniform float uChroma;
+uniform float uBlurAmt;
+uniform float uWarmth;
+void main() {
+  vec2 uv = vUv;
+  vec2 dc = (uv - 0.5) * uChroma * 0.012;
+  vec4 s = texture2D(uTex, uv);
+  s.r = texture2D(uTex, uv + dc).r;
+  s.b = texture2D(uTex, uv - dc).b;
+  vec4 bl = texture2D(uBlurTex, uv);
+  s = mix(s, bl, uBlurAmt * 0.8);
+  float a = s.a;
+  if (a < 0.0001) { gl_FragColor = vec4(0.0); return; }
+  vec3 c = s.rgb / a;
+  vec3 bc = unpremul(bl);
+  c += vec3(1.0, 0.35, 0.15) * smoothstep(0.55, 1.0, luma(bc)) * uHalation * 0.6;
+  c *= vec3(1.0 + 0.12 * uWarmth, 1.0 + 0.03 * uWarmth, 1.0 - 0.12 * uWarmth);
+  c = c * (1.0 - uFade * 0.3) + uFade * 0.12;
+  float frame = floor(uTime * 24.0);
+  c *= 1.0 + uFlicker * 0.24 * (hash(vec2(frame, 1.7)) - 0.5);
+  vec2 d = uv - 0.5;
+  d.x *= uAspect;
+  float vr = length(d) / length(vec2(0.5 * uAspect, 0.5));
+  c *= 1.0 - uVignette * smoothstep(0.4, 1.05, vr);
+  vec2 gp = floor(uv * uRes / max(uGrainSize, 0.5));
+  c += (hash(gp + frame * 17.13) - 0.5) * uGrain * 0.22;
+  vec2 grid = vec2(40.0 * uAspect, 40.0);
+  vec2 cell = floor(uv * grid);
+  if (hash(cell + frame * 3.1) > 1.0 - uDust * 0.03) {
+    vec2 f = fract(uv * grid) - 0.5;
+    c = mix(c, vec3(0.05), smoothstep(0.25, 0.0, length(f)) * 0.8);
+  }
+  float sx = hash(vec2(frame, 9.1));
+  float sOn = step(1.0 - uScratch * 0.5, hash(vec2(frame, 3.3)));
+  c = mix(c, vec3(0.85), smoothstep(0.0015, 0.0, abs(uv.x - sx)) * sOn * 0.6);
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0) * a, a);
+}
+"""
+
+    // ───────────────────────── blur / distortion / stylize ─────────────────────────
+
+    const val DIRBLUR = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uStep;
+void main() {
+  vec4 acc = vec4(0.0);
+  for (int i = 0; i < 17; i++) {
+    float k = float(i) - 8.0;
+    acc += texture2D(uTex, vUv + uStep * k);
+  }
+  gl_FragColor = acc / 17.0;
+}
+"""
+
+    const val ZOOMBLUR = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uCenter;
+uniform float uAmount;
+void main() {
+  vec4 acc = vec4(0.0);
+  vec2 d = uCenter - vUv;
+  for (int i = 0; i < 16; i++) {
+    acc += texture2D(uTex, vUv + d * uAmount * 0.3 * float(i) / 15.0);
+  }
+  gl_FragColor = acc / 16.0;
+}
+"""
+
+    const val CHROMAB = COMMON + """
+uniform sampler2D uTex;
+uniform float uAmount;
+uniform float uAngle;
+void main() {
+  vec2 dir = vec2(cos(uAngle), sin(uAngle));
+  float r = length(vUv - 0.5) + 0.3;
+  vec2 off = dir * uAmount * 0.012 * r;
+  vec4 s = texture2D(uTex, vUv);
+  vec4 sr = texture2D(uTex, vUv + off);
+  vec4 sb = texture2D(uTex, vUv - off);
+  float a = max(s.a, max(sr.a, sb.a));
+  gl_FragColor = vec4(sr.r, s.g, sb.b, a);
+}
+"""
+
+    const val WAVE = COMMON + """
+uniform sampler2D uTex;
+uniform float uAmp;
+uniform float uFreq;
+uniform float uSpeed;
+uniform float uAngle;
+uniform float uTime;
+uniform float uAspect;
+void main() {
+  vec2 dir = vec2(cos(uAngle), sin(uAngle));
+  vec2 perp = vec2(-dir.y, dir.x);
+  float ph = dot(vUv * vec2(uAspect, 1.0), dir) * uFreq * 6.2831 + uTime * uSpeed * 6.2831;
+  gl_FragColor = texture2D(uTex, vUv + perp * uAmp * sin(ph));
+}
+"""
+
+    const val BULGE = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uCenter;
+uniform float uAmount;
+uniform float uRadius;
+uniform float uAspect;
+void main() {
+  vec2 p = vUv - uCenter;
+  p.x *= uAspect;
+  float r = length(p) / max(uRadius, 0.001);
+  if (r < 1.0 && r > 0.0001) {
+    float nr = pow(r, 1.0 + uAmount * 0.8);
+    p *= nr / r;
+  }
+  p.x /= uAspect;
+  gl_FragColor = texture2D(uTex, uCenter + p);
+}
+"""
+
+    const val SHARPEN = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+uniform float uAmount;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec4 n = texture2D(uTex, vUv + vec2(uTexel.x, 0.0)) + texture2D(uTex, vUv - vec2(uTexel.x, 0.0))
+         + texture2D(uTex, vUv + vec2(0.0, uTexel.y)) + texture2D(uTex, vUv - vec2(0.0, uTexel.y));
+  vec4 o = clamp(s + (s - n * 0.25) * uAmount * 2.0, 0.0, 1.0);
+  gl_FragColor = vec4(min(o.rgb, vec3(o.a)), o.a);
+}
+"""
+
+    const val POSTERIZE = COMMON + """
+uniform sampler2D uTex;
+uniform float uLevels;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec3 c = floor(unpremul(s) * uLevels + 0.5) / uLevels;
+  gl_FragColor = vec4(c * s.a, s.a);
+}
+"""
+
+    const val MOSAIC = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uCell;
+void main() {
+  vec2 uv = (floor(vUv / uCell) + 0.5) * uCell;
+  gl_FragColor = texture2D(uTex, uv);
+}
+"""
+
+    const val VIGNETTE = COMMON + """
+uniform sampler2D uTex;
+uniform float uAmount;
+uniform float uFeather;
+uniform float uRound;
+uniform float uAspect;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec2 d = vUv - 0.5;
+  d.x *= mix(1.0, uAspect, uRound);
+  float r = length(d) / length(vec2(0.5 * mix(1.0, uAspect, uRound), 0.5));
+  float v = 1.0 - uAmount * smoothstep(1.0 - uFeather * 0.9 - 0.05, 1.05, r);
+  gl_FragColor = vec4(s.rgb * v, s.a);
+}
+"""
+}
