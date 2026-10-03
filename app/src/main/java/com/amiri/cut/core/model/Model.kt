@@ -132,6 +132,16 @@ data class TextSpec(
     val props: Props = Props(),
 )
 
+@Serializable
+enum class ShapeKind(val label: String) { RECT("Rectangle"), ELLIPSE("Ellipse"), POLYGON("Polygon"), STAR("Star"), LINE("Line") }
+
+/** Vector shape layer. Animatable values in [props] (see ShapeSpecDefaults). */
+@Serializable
+data class ShapeSpec(
+    val kind: ShapeKind = ShapeKind.RECT,
+    val props: Props = Props(),
+)
+
 /** Speed ramp: relative speed shape across the clip (duration is preserved). */
 @Serializable
 data class SpeedRamp(
@@ -205,7 +215,7 @@ data class Stabilization(
     }
 }
 
-enum class ClipKind { MEDIA, TEXT, ADJUSTMENT }
+enum class ClipKind { MEDIA, TEXT, SHAPE, ADJUSTMENT }
 
 @Serializable
 data class Clip(
@@ -233,6 +243,7 @@ data class Clip(
     val effects: List<Effect> = emptyList(),
     val masks: List<ShapeMask> = emptyList(),
     val text: TextSpec? = null,
+    val shape: ShapeSpec? = null,
     val adjustment: Boolean = false,
     /** Audio: volume (0..2), fadeIn / fadeOut (seconds). */
     val audio: Props = Props(),
@@ -246,6 +257,7 @@ data class Clip(
 ) {
     val kind: ClipKind get() = when {
         text != null -> ClipKind.TEXT
+        shape != null -> ClipKind.SHAPE
         adjustment -> ClipKind.ADJUSTMENT
         else -> ClipKind.MEDIA
     }
@@ -287,12 +299,14 @@ data class Clip(
         effects = effects.map { it.copy(props = it.props.shift(dt)) },
         masks = masks.map { it.copy(props = it.props.shift(dt)) },
         text = text?.let { it.copy(props = it.props.shift(dt)) },
+        shape = shape?.let { it.copy(props = it.props.shift(dt)) },
         audio = audio.shift(dt),
     )
 
     /** All keyframe times (clip-local) for timeline display. */
     fun keyTimes(): List<Long> = (transform.keyTimes() + effects.flatMap { it.props.keyTimes() } +
-        masks.flatMap { it.props.keyTimes() } + (text?.props?.keyTimes() ?: emptyList()) + audio.keyTimes()).distinct().sorted()
+        masks.flatMap { it.props.keyTimes() } + (text?.props?.keyTimes() ?: emptyList()) +
+        (shape?.props?.keyTimes() ?: emptyList()) + audio.keyTimes()).distinct().sorted()
 }
 
 /** Speed ramp math: normalised so the average relative speed is 1 (duration preserved). */

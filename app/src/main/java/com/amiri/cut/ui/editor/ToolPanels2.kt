@@ -839,6 +839,73 @@ internal fun AudioPanel(c: EditorController) {
     }
 }
 
+// ═══════════════════════════════ Shapes ═══════════════════════════════
+
+@Composable
+internal fun ShapePanel(c: EditorController) {
+    val clip = c.selectedClip()?.takeIf { it.kind == ClipKind.SHAPE }
+    Column {
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            com.amiri.cut.core.model.ShapeKind.entries.forEach { k ->
+                PanelAction(
+                    when (k) {
+                        com.amiri.cut.core.model.ShapeKind.RECT -> Icons.Outlined.CropFree
+                        com.amiri.cut.core.model.ShapeKind.ELLIPSE -> Icons.Outlined.GpsFixed
+                        com.amiri.cut.core.model.ShapeKind.POLYGON -> Icons.Outlined.Layers
+                        com.amiri.cut.core.model.ShapeKind.STAR -> Icons.Outlined.Add
+                        com.amiri.cut.core.model.ShapeKind.LINE -> Icons.Outlined.Flip
+                    },
+                    "+ " + k.label,
+                ) { c.addShape(k) }
+            }
+        }
+        if (clip == null) { Hint("Add a shape layer, or select one on the timeline. Move, scale, rotate and animate it with Transform and Keyframes."); return@Column }
+        val spec = clip.shape ?: return@Column
+        ChoiceChips(com.amiri.cut.core.model.ShapeKind.entries.toList(), spec.kind, { it.label }) { c.setShapeKind(it) }
+        KeyframeBar(c, clip)
+        val t = EditorController.PTarget.Shape(clip.id)
+        com.amiri.cut.core.effects.ShapeSpecDefaults.PARAMS.forEach { ParamRow(c, t, it) }
+        com.amiri.cut.core.effects.ShapeSpecDefaults.COLORS.forEach { (pre, label, def) -> ColorRow(c, t, Triple("${pre}r", "${pre}g", "${pre}b"), label, def) }
+    }
+}
+
+// ═══════════════════════════════ Keyframes ═══════════════════════════════
+
+@Composable
+internal fun KeyframesPanel(c: EditorController) {
+    val clip = visualSelected(c) ?: c.selectedClip() ?: return NeedClip("Select a clip. Then press ◆ (in the bar under the preview) or any ◇ next to a value to add keyframes at the playhead.")
+    val pos by c.engine.position.collectAsState()
+    @Suppress("UNUSED_EXPRESSION") pos
+    Column {
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            PanelAction(Icons.Outlined.Add, if (c.quickKeyHere()) "Remove ◆" else "Key ◆ all") { c.toggleQuickKeys() }
+            PanelAction(Icons.Outlined.ChevronLeft, "Prev key") { c.jumpKey(clip.id, false) }
+            PanelAction(Icons.Outlined.ChevronRight, "Next key") { c.jumpKey(clip.id, true) }
+        }
+        Hint("◆ keys Position, Scale, Rotation and Opacity together. Change values at another time to create motion. Keyframes show as diamonds on the clip in the timeline — drag them to retime.")
+        KeyframeBar(c, clip)
+        // Every animated parameter of this clip, grouped by owner.
+        data class Row3(val target: EditorController.PTarget, val spec: ParamSpec, val group: String)
+        val rows = ArrayList<Row3>()
+        val tt = EditorController.PTarget.Transform(clip.id)
+        (TransformSpec.PARAMS + TransformSpec.MOTION_BLUR).forEach { rows += Row3(tt, it, "Transform") }
+        clip.effects.forEach { e ->
+            val sp = EffectCatalog.spec(e.type) ?: return@forEach
+            sp.params.forEach { rows += Row3(EditorController.PTarget.Fx(clip.id, e.id), it, sp.label) }
+        }
+        clip.masks.forEachIndexed { i, m -> MaskSpec.PARAMS.forEach { rows += Row3(EditorController.PTarget.Mask(clip.id, m.id), it, "Mask ${i + 1}") } }
+        if (clip.text != null) TextSpecDefaults.STYLE.forEach { rows += Row3(EditorController.PTarget.Text(clip.id), it, "Text") }
+        if (clip.shape != null) com.amiri.cut.core.effects.ShapeSpecDefaults.PARAMS.forEach { rows += Row3(EditorController.PTarget.Shape(clip.id), it, "Shape") }
+        AudioSpec.PARAMS.forEach { rows += Row3(EditorController.PTarget.Audio(clip.id), it, "Audio") }
+        val animated = rows.filter { c.isAnimated(it.target, it.spec.id) }
+        SectionTitle("Animated (${animated.size})")
+        if (animated.isEmpty()) Hint("Nothing animated yet.")
+        animated.forEach { r -> ParamRow(c, r.target, r.spec, r.group + " · " + r.spec.label) }
+        SectionTitle("Transform")
+        TransformSpec.PARAMS.take(7).forEach { ParamRow(c, tt, it) }
+    }
+}
+
 @Suppress("unused")
 private fun keepMath() = listOf(min(1, 2), max(1, 2), sin(0.0), cos(0.0), atan2(0.0, 1.0))
 @Suppress("unused")

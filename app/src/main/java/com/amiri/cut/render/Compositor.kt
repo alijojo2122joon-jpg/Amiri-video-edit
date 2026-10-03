@@ -106,6 +106,8 @@ class Compositor(private val text: TextRenderer) {
         outFb: Int,
         viewport: IntArray,
         capture: ((ByteArray, Int, Int) -> Unit)? = null,
+        /** Viewer zoom & pan for the editor (zoom, panX, panY as fractions of the view, y down). */
+        view: FloatArray = NO_VIEW,
     ) {
         GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
@@ -136,6 +138,7 @@ class Compositor(private val text: TextRenderer) {
         p.tex("uTex", 0, canvas.tex)
         p.f1("uChecker", if (opt.checker && project.settings.background == CanvasBackground.TRANSPARENT) 1f else 0f)
         p.f1("uCell", max(8f, viewport[2] / 40f))
+        p.f3("uView", view[0], view[1], view[2])
         p.draw()
         pool.recycle(canvas)
         pool.recycle(spare)
@@ -171,7 +174,20 @@ class Compositor(private val text: TextRenderer) {
         val baseW: Float
         val baseH: Float
 
-        if (clip.kind == ClipKind.TEXT) {
+        if (clip.kind == ClipKind.SHAPE) {
+            val spec = clip.shape ?: return null
+            val key = ShapeRenderer.key(spec, local, cw, ch)
+            val c = textTex.getOrPut(clip.id) { Cached(0, null) }
+            if (c.key != key) {
+                val bmp = ShapeRenderer.render(spec, local, cw, ch)
+                c.tex = Gl.uploadBitmap(bmp, c.tex)
+                c.w = bmp.width; c.h = bmp.height; c.key = key
+                bmp.recycle()
+            }
+            texId = c.tex
+            sw = c.w.toFloat(); sh = c.h.toFloat()
+            baseW = sw; baseH = sh
+        } else if (clip.kind == ClipKind.TEXT) {
             val spec = clip.text ?: return null
             val key = text.key(spec, local, cw, ch)
             val c = textTex.getOrPut(clip.id) { Cached(0, null) }
@@ -333,7 +349,7 @@ class Compositor(private val text: TextRenderer) {
         val local = t - clip.startUs
         fun tv(id: String, at: Long = local) = clip.transform.at(id, at, TransformSpec.def(id))
         val mbAmount = tv("mbAmount")
-        val moving = clip.transform.animated || clip.follow != null || clip.stab != null
+        val moving = clip.transform.animated || clip.follow != null || clip.stab != null || clip.effects.any { it.enabled && it.type == "wiggle" }
         val samples = if (mbAmount > 0.001f && moving) (2 + (mbAmount * 10).roundToInt()).coerceAtMost(12) else 1
         val frameUs = 1_000_000.0 / project.settings.fps
         val shutter = tv("mbShutter") / 360.0
@@ -492,6 +508,14 @@ class Compositor(private val text: TextRenderer) {
                 p.f1("uOpacity", v("opacity")); p.f3("uColor", v("cr"), v("cg"), v("cb")); p.f1("uAspect", aspect)
                 p.i1("uMode", blendMode(e))
             }
+            "ccsweep" -> run("ccsweep", Shaders.CC_SWEEP) { p ->
+                p.f2("uCenter", v("cx"), 1f - v("cy")); p.f1("uDir", Math.toRadians(v("direction").toDouble()).toFloat())
+                p.f1("uWidth", v("width")); p.f1("uIntensity", v("intensity")); p.f1("uEdgeI", v("edgeIntensity"))
+                p.f1("uEdgeT", v("edgeThickness")); p.f3("uColor", v("cr"), v("cg"), v("cb")); p.f1("uAspect", aspect)
+                p.f2("uTexel", 1f / w, 1f / h)
+                p.i1("uShape", when (e.opts["shape"]) { "Linear" -> 0; "Sharp" -> 2; else -> 1 })
+                p.i1("uRecept", when (e.opts["reception"]) { "Composite" -> 1; "Cutout" -> 2; else -> 0 })
+            }
             "rays" -> run("rays", Shaders.RAYS) { p ->
                 p.f2("uCenter", v("x"), 1f - v("y")); p.f1("uDir", Math.toRadians(v("direction").toDouble()).toFloat())
                 p.f1("uIntensity", v("intensity")); p.f1("uLength", v("length")); p.f1("uDecay", v("decay"))
@@ -565,6 +589,8 @@ class Compositor(private val text: TextRenderer) {
     }
 
     companion object {
+        val NO_VIEW = floatArrayOf(1f, 0f, 0f)
+
         /** Light-leak presets: three RGB colors each. */
         val LEAK_COLORS: Map<String, FloatArray> = mapOf(
             "Amber" to floatArrayOf(1f, 0.55f, 0.15f, 1f, 0.8f, 0.35f, 0.9f, 0.3f, 0.1f),
@@ -621,6 +647,11 @@ object LayerMath {
             val m = text?.measure(spec, t - clip.startUs, cw, ch) ?: return null
             return m.first.toFloat() to m.second.toFloat()
         }
+        if (clip.kind == ClipKind.SHAPE) {
+            val spec = clip.shape ?: return null
+            val m = ShapeRenderer.measure(spec, t - clip.startUs, cw, ch)
+            return m.first.toFloat() to m.second.toFloat()
+        }
         val a = project.asset(clip.assetId) ?: return null
         val sw = a.displayWidth.takeIf { it > 0 }?.toFloat() ?: return null
         val sh = a.displayHeight.takeIf { it > 0 }?.toFloat() ?: return null
@@ -645,6 +676,21 @@ object LayerMath {
         var rot = tv("rot")
         val ax = tv("ax")
         val ay = tv("ay")
+
+        // Wiggle Position (motion effects).
+        for (e in clip.effects) {
+            if (!e.enabled || e.type != "wiggle") continue
+            fun ev(id: String) = e.props.at(id, local, EffectCatalog.WIGGLE.param(id)?.default ?: 0f).toDouble()
+            val x = local / 1_000_000.0 * ev("freq")
+            val seed = ev("seed").toInt()
+            val det = ev("detail")
+            val axes = e.opts["axes"] ?: "X & Y"
+            val amp = ev("amp")
+            if (axes != "Y only") px += Wiggle.noise(x, seed, det) * amp
+            if (axes != "X only") py += Wiggle.noise(x, seed + 101, det) * amp
+            rot += Wiggle.noise(x, seed + 202, det) * ev("rotAmp")
+            scale *= 1.0 + Wiggle.noise(x, seed + 303, det) * ev("scaleAmp")
+        }
 
         // Follow another clip's motion track.
         clip.follow?.let { f ->
@@ -719,4 +765,27 @@ object LayerMath {
     }
 
 
+}
+
+/** Smooth deterministic 1D noise for Wiggle (value noise + optional octave), range ≈ −1..1. */
+object Wiggle {
+    private fun hash(i: Long, seed: Int): Double {
+        var x = i * 374761393L + seed * 668265263L
+        x = (x xor (x ushr 13)) * 1274126177L
+        x = x xor (x ushr 16)
+        return ((x and 0xFFFFFF).toDouble() / 0xFFFFFF) * 2.0 - 1.0
+    }
+
+    private fun value(x: Double, seed: Int): Double {
+        val i = Math.floor(x).toLong()
+        val f = x - i
+        val u = f * f * (3 - 2 * f)
+        return hash(i, seed) + (hash(i + 1, seed) - hash(i, seed)) * u
+    }
+
+    fun noise(x: Double, seed: Int, detail: Double): Double {
+        val a = value(x, seed)
+        val b = value(x * 2.0 + 13.7, seed + 31) * 0.5
+        return (a + b * detail) / (1.0 + 0.5 * detail)
+    }
 }

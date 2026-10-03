@@ -51,6 +51,13 @@ import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.material.icons.outlined.Category
+import androidx.compose.material.icons.outlined.OpenInFull
+import androidx.compose.material.icons.outlined.CloseFullscreen
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -132,6 +139,9 @@ fun EditorScreen(
 @Composable
 private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // Roto needs a big canvas: hide the timeline automatically (toggle with ⤢ in the transport bar).
+    LaunchedEffect(c.activeTool) { c.expandedPreview = c.activeTool == EditorTool.ROTO }
+    val expanded = c.expandedPreview
     if (landscape) {
         Row(Modifier.fillMaxSize().safeDrawingPadding()) {
             Column(Modifier.weight(0.55f).fillMaxHeight()) {
@@ -140,7 +150,7 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
                 TransportBar(c)
             }
             Column(Modifier.weight(0.45f).fillMaxHeight()) {
-                TimelineView(c, Modifier.weight(1f).fillMaxWidth())
+                if (!expanded) TimelineView(c, Modifier.weight(1f).fillMaxWidth()) else Box(Modifier.weight(1f))
                 ToolArea(c)
             }
         }
@@ -149,7 +159,7 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
             TopBar(c, onBack)
             PreviewPane(c, Modifier.weight(1f).fillMaxWidth())
             TransportBar(c)
-            TimelineView(c, Modifier.fillMaxWidth().height(250.dp))
+            if (!expanded) TimelineView(c, Modifier.fillMaxWidth().height(250.dp))
             ToolArea(c)
         }
     }
@@ -245,8 +255,23 @@ private fun TransportBar(c: EditorController) {
         }
         IconAction(Icons.Outlined.ChevronRight, "Next frame", size = 36) { c.engine.stepFrames(1); Haptics.tick(view) }
         IconAction(Icons.Outlined.SkipNext, "Next edit", size = 36) { c.jumpNextEdit() }
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            IconAction(Icons.Outlined.BookmarkAdd, "Add marker", size = 36) { c.addMarker(); Haptics.tick(view) }
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            val keyed = c.selectedClipId != null && c.quickKeyHere()
+            Box(
+                Modifier.size(36.dp).clickable { c.toggleQuickKeys(); Haptics.confirm(view) },
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.foundation.Canvas(Modifier.size(16.dp)) {
+                    rotate(45f) {
+                        val s = size.minDimension * 0.7f
+                        val o = Offset((size.width - s) / 2, (size.height - s) / 2)
+                        if (keyed) drawRect(accent, o, androidx.compose.ui.geometry.Size(s, s))
+                        else drawRect(if (c.selectedClipId != null) Amiri.TextPrimary else Amiri.TextTertiary, o, androidx.compose.ui.geometry.Size(s, s), style = Stroke(2f))
+                    }
+                }
+            }
+            IconAction(if (c.expandedPreview) Icons.Outlined.CloseFullscreen else Icons.Outlined.OpenInFull, "Bigger preview", size = 34) { c.expandedPreview = !c.expandedPreview }
+            IconAction(Icons.Outlined.BookmarkAdd, "Add marker", size = 34) { c.addMarker(); Haptics.tick(view) }
         }
     }
 }
@@ -263,6 +288,8 @@ private fun EditorTool.icon(): ImageVector = when (this) {
     EditorTool.COLOR -> Icons.Outlined.Palette
     EditorTool.EFFECTS -> Icons.Outlined.AutoFixHigh
     EditorTool.AUDIO -> Icons.Outlined.GraphicEq
+    EditorTool.KEYS -> Icons.Outlined.Timeline
+    EditorTool.SHAPE -> Icons.Outlined.Category
 }
 
 @Composable

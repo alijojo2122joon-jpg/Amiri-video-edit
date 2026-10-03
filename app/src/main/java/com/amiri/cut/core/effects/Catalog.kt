@@ -20,7 +20,7 @@ data class ParamSpec(
         if (decimals == 0) "${Math.round(v * displayScale)}$unit" else "%.${decimals}f$unit".format(v * displayScale)
 }
 
-enum class EffectCategory(val label: String) { LIGHT("Light"), FILM("Film"), BLUR("Blur"), DISTORTION("Distortion"), COLOR("Color"), STYLIZE("Stylize") }
+enum class EffectCategory(val label: String) { LIGHT("Light"), MOTION("Motion"), FILM("Film"), BLUR("Blur"), DISTORTION("Distortion"), COLOR("Color"), STYLIZE("Stylize") }
 
 data class OptionSpec(val id: String, val label: String, val choices: List<String>, val default: String)
 
@@ -33,6 +33,10 @@ data class EffectSpec(
     /** Groups of three param ids that form an RGB color (for color pickers). */
     val colors: List<Triple<String, String, String>> = emptyList(),
     val description: String = "",
+    /** Kept for old projects but not offered in the Add-effect list. */
+    val hidden: Boolean = false,
+    /** Affects the layer's motion (transform) rather than its pixels. */
+    val motion: Boolean = false,
 ) {
     fun param(id: String): ParamSpec? = params.firstOrNull { it.id == id }
 }
@@ -109,7 +113,7 @@ object EffectCatalog {
     )
 
     val SWEEP = EffectSpec(
-        "sweep", "Light Sweep", EffectCategory.LIGHT,
+        "sweep", "Light Sweep (simple)", EffectCategory.LIGHT, hidden = true,
         params = listOf(
             p("pos", "Position", -0.5f, 1.5f, 0.5f),
             deg("angle", "Angle", -90f, 90f, 25f),
@@ -121,6 +125,42 @@ object EffectCatalog {
         options = listOf(OptionSpec("blend", "Blend", BLEND_CHOICES, "Add")),
         colors = listOf(Triple("cr", "cg", "cb")),
         description = "Animate Position with keyframes to move the light across",
+    )
+
+    /** After Effects-style CC Light Sweep. */
+    val CC_SWEEP = EffectSpec(
+        "ccsweep", "CC Light Sweep", EffectCategory.LIGHT,
+        params = listOf(
+            p("cx", "Center X", -0.5f, 1.5f, 0.5f),
+            p("cy", "Center Y", -0.5f, 1.5f, 0.5f),
+            deg("direction", "Direction", -180f, 180f, -30f),
+            p("width", "Width", 0.005f, 1f, 0.12f),
+            p("intensity", "Sweep Intensity", 0f, 3f, 1f),
+            p("edgeIntensity", "Edge Intensity", 0f, 3f, 1f),
+            p("edgeThickness", "Edge Thickness", 0f, 1f, 0.25f),
+        ) + rgb("c", "Light Color", 1f, 1f, 1f),
+        options = listOf(
+            OptionSpec("shape", "Shape", listOf("Linear", "Smooth", "Sharp"), "Smooth"),
+            OptionSpec("reception", "Light Reception", listOf("Add", "Composite", "Cutout"), "Add"),
+        ),
+        colors = listOf(Triple("cr", "cg", "cb")),
+        description = "Keyframe Center X/Y to sweep the light across the layer",
+    )
+
+    /** After Effects-style wiggle on the layer's position (and optionally rotation/scale). */
+    val WIGGLE = EffectSpec(
+        "wiggle", "Wiggle Position", EffectCategory.MOTION,
+        params = listOf(
+            p("freq", "Frequency", 0.1f, 15f, 2f, 1f, " /s", 1),
+            p("amp", "Amplitude", 0f, 0.5f, 0.03f),
+            deg("rotAmp", "Rotation", 0f, 45f, 0f),
+            p("scaleAmp", "Scale", 0f, 0.5f, 0f),
+            p("seed", "Seed", 0f, 100f, 7f, 1f, ""),
+            p("detail", "Detail (octaves)", 0f, 1f, 0.5f),
+        ),
+        options = listOf(OptionSpec("axes", "Axes", listOf("X & Y", "X only", "Y only"), "X & Y")),
+        motion = true,
+        description = "Random smooth shake like the AE wiggle() expression",
     )
 
     val RAYS = EffectSpec(
@@ -196,10 +236,10 @@ object EffectCatalog {
     val MOSAIC = EffectSpec("mosaic", "Mosaic", EffectCategory.STYLIZE, params = listOf(p("size", "Cell size", 0.002f, 0.1f, 0.02f, 1000f, "‰")))
     val VIGNETTE = EffectSpec("vignette", "Vignette", EffectCategory.STYLIZE, params = listOf(p("amount", "Amount", 0f, 1f, 0.5f), p("feather", "Feather", 0.05f, 1f, 0.5f), p("roundness", "Roundness", 0f, 1f, 1f)))
 
-    val ALL: List<EffectSpec> = listOf(GLOW, SWEEP, RAYS, LEAK, FILM, BLUR, DIRBLUR, ZOOMBLUR, CHROMAB, WAVE, BULGE, COLOR, LUT, CHROMA, SHARPEN, POSTERIZE, MOSAIC, VIGNETTE)
+    val ALL: List<EffectSpec> = listOf(GLOW, CC_SWEEP, SWEEP, WIGGLE, RAYS, LEAK, FILM, BLUR, DIRBLUR, ZOOMBLUR, CHROMAB, WAVE, BULGE, COLOR, LUT, CHROMA, SHARPEN, POSTERIZE, MOSAIC, VIGNETTE)
 
     fun spec(type: String): EffectSpec? = ALL.firstOrNull { it.type == type }
-    fun byCategory(c: EffectCategory) = ALL.filter { it.category == c }
+    fun byCategory(c: EffectCategory) = ALL.filter { it.category == c && !it.hidden }
 }
 
 object TransformSpec {
@@ -276,6 +316,28 @@ object TextSpecDefaults {
         for ((pre, _, d) in COLORS) {
             when (id) { "${pre}r" -> return d[0]; "${pre}g" -> return d[1]; "${pre}b" -> return d[2] }
         }
+        return 0f
+    }
+}
+
+object ShapeSpecDefaults {
+    val PARAMS = listOf(
+        ParamSpec("w", "Width", 0.01f, 2f, 0.4f),
+        ParamSpec("h", "Height", 0.01f, 2f, 0.4f),
+        ParamSpec("radius", "Corner radius", 0f, 0.5f, 0f),
+        ParamSpec("sides", "Sides / points", 3f, 16f, 5f, 1f, ""),
+        ParamSpec("inner", "Star inner radius", 0.1f, 0.95f, 0.45f),
+        ParamSpec("fillA", "Fill opacity", 0f, 1f, 1f),
+        ParamSpec("strokeW", "Stroke width", 0f, 0.1f, 0f, 1000f, "‰"),
+        ParamSpec("strokeA", "Stroke opacity", 0f, 1f, 1f),
+    )
+    val COLORS = listOf(
+        Triple("f", "Fill color", floatArrayOf(1f, 1f, 1f)),
+        Triple("s", "Stroke color", floatArrayOf(0f, 0f, 0f)),
+    )
+    fun def(id: String): Float {
+        PARAMS.firstOrNull { it.id == id }?.let { return it.default }
+        for ((pre, _, d) in COLORS) when (id) { "${pre}r" -> return d[0]; "${pre}g" -> return d[1]; "${pre}b" -> return d[2] }
         return 0f
     }
 }

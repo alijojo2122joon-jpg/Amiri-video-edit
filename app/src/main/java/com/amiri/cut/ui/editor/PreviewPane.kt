@@ -14,6 +14,10 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -70,6 +74,7 @@ import com.amiri.cut.render.LayerMath
 import com.amiri.cut.ui.theme.Amiri
 import com.amiri.cut.ui.theme.LocalAccent
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
@@ -104,8 +109,42 @@ fun PreviewPane(c: EditorController, modifier: Modifier = Modifier) {
         onDispose { renderer.scopeSink = null }
     }
 
+    LaunchedEffect(c.viewZoom, c.viewPanX, c.viewPanY) {
+        renderer.viewXform = floatArrayOf(c.viewZoom, c.viewPanX, c.viewPanY)
+        renderer.view?.requestRender()
+    }
+    val tool = c.activeTool
+    // Two-finger view zoom/pan wherever two fingers aren't already used to transform a layer.
+    val viewerGestures = when (tool) {
+        EditorTool.TRANSFORM, EditorTool.TEXT, EditorTool.SHAPE, EditorTool.KEYS -> false
+        EditorTool.MASK -> c.penActive
+        else -> true
+    }
+
     Box(modifier.padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-        Box(Modifier.aspectRatio(aspect).clipToBounds(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.aspectRatio(aspect).clipToBounds()
+                .pointerInput(viewerGestures) {
+                    if (!viewerGestures) return@pointerInput
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        do {
+                            val ev = awaitPointerEvent(PointerEventPass.Initial)
+                            if (ev.changes.count { it.pressed } >= 2) {
+                                val w = size.width.toFloat().coerceAtLeast(1f)
+                                val h = size.height.toFloat().coerceAtLeast(1f)
+                                val z = ev.calculateZoom()
+                                val pan = ev.calculatePan()
+                                val cen = ev.calculateCentroid()
+                                if (z.isFinite() && z != 1f) c.zoomViewAt(z, cen.x / w, cen.y / h)
+                                c.setView(c.viewZoom, c.viewPanX + pan.x / w, c.viewPanY + pan.y / h)
+                                ev.changes.forEach { it.consume() }
+                            }
+                        } while (ev.changes.any { it.pressed })
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
             AndroidView(
                 factory = { ctx ->
                     GLSurfaceView(ctx).apply {
@@ -125,19 +164,41 @@ fun PreviewPane(c: EditorController, modifier: Modifier = Modifier) {
             )
 
             val picking = c.pickColorFor
+            // Overlays follow the same zoom/pan as the GL picture.
+            Box(Modifier.fillMaxSize().graphicsLayer {
+                scaleX = c.viewZoom; scaleY = c.viewZoom
+                translationX = c.viewPanX * size.width; translationY = c.viewPanY * size.height
+            }) {
             when {
                 picking != null -> EyedropperOverlay(c, p, pos)
                 c.activeTool == EditorTool.ROTO -> c.rotoTarget()?.let { RotoOverlay(c, p, it, pos) } ?: TapToPlay(c)
-                c.activeTool == EditorTool.TRANSFORM || c.activeTool == EditorTool.TEXT -> TransformGizmo(c, p, pos)
+                c.activeTool == EditorTool.TRANSFORM || c.activeTool == EditorTool.TEXT || c.activeTool == EditorTool.SHAPE || c.activeTool == EditorTool.KEYS -> TransformGizmo(c, p, pos)
                 c.activeTool == EditorTool.MASK -> MaskGizmo(c, p, pos)
                 c.activeTool == EditorTool.TRACK -> TrackGizmo(c, p, pos)
                 else -> TapToPlay(c)
             }
             GuidesOverlay(c, aspect)
+            }
+            ViewerControls(c, Modifier.align(Alignment.BottomStart).padding(6.dp))
             if (c.showScopes) {
                 val data by scopes.collectAsState()
                 ScopesView(data, Modifier.align(Alignment.TopEnd).padding(6.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun ViewerControls(c: EditorController, modifier: Modifier) {
+    Row(
+        modifier.clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.55f)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("−", color = Color.White, fontSize = 16.sp, modifier = Modifier.clickable { c.zoomViewAt(1f / 1.5f, 0.5f, 0.5f) }.padding(horizontal = 10.dp, vertical = 4.dp))
+        Text("${(c.viewZoom * 100).toInt()}%", color = Color.White, fontSize = 11.sp, modifier = Modifier.clickable { c.resetView() }.padding(horizontal = 4.dp, vertical = 4.dp))
+        Text("+", color = Color.White, fontSize = 16.sp, modifier = Modifier.clickable { c.zoomViewAt(1.5f, 0.5f, 0.5f) }.padding(horizontal = 10.dp, vertical = 4.dp))
+        if (c.viewZoom != 1f || c.viewPanX != 0f || c.viewPanY != 0f) {
+            Text("Fit", color = LocalAccent.current, fontSize = 11.sp, modifier = Modifier.clickable { c.resetView() }.padding(horizontal = 8.dp, vertical = 4.dp))
         }
     }
 }
@@ -168,9 +229,44 @@ private fun TransformGizmo(c: EditorController, p: Project, pos: Long) {
                 }
                 val t = EditorController.PTarget.Transform(clip.id)
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = false)
                     c.engine.pause()
+                    val w0 = this.size.width
+                    val h0 = this.size.height
+                    val fresh = c.selectedClip()?.takeIf { it.id == clip.id } ?: clip
+                    val g0 = layerGeo(c, p, fresh, c.engine.position.value, w0, h0)
+                    val lt0 = c.localTime(clip.id)
+                    val anchorPt = g0?.toCanvas(fresh.transform.at("ax", lt0, 0.5f), fresh.transform.at("ay", lt0, 0.5f))
+                    val near = anchorPt != null && (down.position - anchorPt).getDistance() < 30.dp.toPx() / c.viewZoom
+                    var released = false
+                    var anchorMode = false
+                    if (near) {
+                        val r = withTimeoutOrNull(320L) {
+                            while (true) {
+                                val e = awaitPointerEvent()
+                                val ch = e.changes.firstOrNull { it.id == down.id }
+                                if (ch == null || !ch.pressed) { released = true; return@withTimeoutOrNull true }
+                                if ((ch.position - down.position).getDistance() > viewConfiguration.touchSlop) return@withTimeoutOrNull true
+                            }
+                            @Suppress("UNREACHABLE_CODE") true
+                        }
+                        anchorMode = r == null
+                    }
+                    if (released) return@awaitEachGesture
                     c.beginEdit()
+                    if (anchorMode && g0 != null) {
+                        c.anchorDragging = true
+                        do {
+                            val ev = awaitPointerEvent()
+                            val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                            val (u, v) = g0.toLayer(ch.position)
+                            c.setAnchorKeepingPlace(clip.id, u, v, ch.position.x / w0, ch.position.y / h0)
+                            ev.changes.forEach { it.consume() }
+                        } while (ev.changes.any { it.pressed })
+                        c.anchorDragging = false
+                        c.endEdit("Anchor point")
+                        return@awaitEachGesture
+                    }
                     do {
                         val ev = awaitPointerEvent()
                         val pan = ev.calculatePan()
@@ -200,7 +296,9 @@ private fun TransformGizmo(c: EditorController, p: Project, pos: Long) {
         drawPath(path, accent, style = Stroke(2.dp.toPx()))
         pts.forEach { drawCircle(Color.White, 5.dp.toPx(), it); drawCircle(accent, 5.dp.toPx(), it, style = Stroke(1.5f)) }
         val anchor = g.toCanvas(cl.at("ax", lt, TransformSpec.def("ax")), cl.at("ay", lt, TransformSpec.def("ay")))
-        drawCircle(accent, 4.dp.toPx(), anchor)
+        val ar = (if (c.anchorDragging) 9.dp.toPx() else 6.dp.toPx()) / c.viewZoom
+        drawCircle(Color.Black.copy(alpha = 0.4f), ar + 2f, anchor)
+        drawCircle(if (c.anchorDragging) Color(0xFFFFD27A) else accent, ar, anchor, style = Stroke(2.dp.toPx() / c.viewZoom))
         drawLine(accent, anchor - Offset(10.dp.toPx(), 0f), anchor + Offset(10.dp.toPx(), 0f), 1.5f)
         drawLine(accent, anchor - Offset(0f, 10.dp.toPx()), anchor + Offset(0f, 10.dp.toPx()), 1.5f)
     }
@@ -410,14 +508,20 @@ private fun RotoOverlay(c: EditorController, p: Project, t: EditorController.Rot
                     stroke.clear()
                     stroke.add(down.position)
                     touching = true
+                    var aborted = false
                     while (true) {
                         val ev = awaitPointerEvent()
-                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!ch.pressed) break
-                        if ((ch.position - stroke.last()).getDistance() > 2f) stroke.add(ch.position)
+                        if (ev.changes.count { it.pressed } >= 2) { aborted = true }
+                        val ch = ev.changes.firstOrNull { it.id == down.id }
+                        if (ch == null || !ch.pressed) {
+                            if (aborted && ev.changes.any { it.pressed }) continue
+                            break
+                        }
+                        if (!aborted && (ch.position - stroke.last()).getDistance() > 1.5f / c.viewZoom) stroke.add(ch.position)
                         ch.consume()
                     }
                     touching = false
+                    if (aborted) { stroke.clear(); return@awaitEachGesture }
                     val g = layerGeo(c, p, t.clip, c.engine.position.value, this.size.width, this.size.height)
                     if (g != null) c.applyRotoStroke(stroke.map { g.toLayer(it) })
                 }

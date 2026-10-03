@@ -101,6 +101,8 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
                 EditorTool.COLOR -> ColorPanel(c)
                 EditorTool.EFFECTS -> EffectsPanel(c)
                 EditorTool.AUDIO -> AudioPanel(c)
+                EditorTool.KEYS -> KeyframesPanel(c)
+                EditorTool.SHAPE -> ShapePanel(c)
             }
         }
     }
@@ -312,8 +314,21 @@ private fun RotoPanel(c: EditorController) {
             }
         }
         // Sliders
-        LabeledSlider("Brush", c.rotoBrush, 0.01f..0.30f, "${(c.rotoBrush * 100).toInt()}%") { c.rotoBrush = it }
-        LabeledSlider("Feather", c.rotoFeather, 0f..0.05f, "${"%.1f".format(c.rotoFeather * 100)}%") { c.rotoFeather = it }
+        LabeledSlider("Brush", c.rotoBrush, 0.005f..0.30f, "${"%.1f".format(c.rotoBrush * 100)}%") { c.rotoBrush = it }
+        if (c.rotoMode == RotoBrushMode.HAIR) {
+            LabeledSlider("Detail", c.rotoHairRadius, 4f..30f, "${c.rotoHairRadius.toInt()} px") { c.rotoHairRadius = it }
+            LabeledSlider("Edge", c.rotoHairContrast, 0.5f..3f, "${"%.1f".format(c.rotoHairContrast)}×") { c.rotoHairContrast = it }
+            Text(
+                "Paint over hair or fur along the edge of the mask: it separates strands from the background by color. Paint the solid body with Character first.",
+                color = Amiri.TextTertiary, fontSize = 10.sp,
+            )
+        } else {
+            LabeledSlider("Feather", c.rotoFeather, 0f..0.05f, "${"%.1f".format(c.rotoFeather * 100)}%") { c.rotoFeather = it }
+        }
+        Text(
+            "One finger paints · two fingers zoom and move the view · ⤢ shows/hides the timeline",
+            color = Amiri.TextTertiary, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp),
+        )
         // Actions
         Row(Modifier.horizontalScroll(rememberScrollState())) {
             PanelAction(Icons.Outlined.PlayArrow, "Propagate") { c.rotoPropagate() }

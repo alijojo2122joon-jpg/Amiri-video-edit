@@ -39,7 +39,7 @@ object TimelineOps {
 
     /** Can [clip] live on [track]? Text → Text/Overlay; adjustment → any visual track; media by type. */
     fun compatibleClip(track: Track, clip: Clip, asset: MediaAsset?): Boolean = when (clip.kind) {
-        ClipKind.TEXT -> track.kind == TrackKind.TEXT || track.kind == TrackKind.OVERLAY
+        ClipKind.TEXT, ClipKind.SHAPE -> track.kind != TrackKind.AUDIO
         ClipKind.ADJUSTMENT -> track.kind != TrackKind.AUDIO
         ClipKind.MEDIA -> asset != null && compatible(track, asset)
     }
@@ -377,6 +377,20 @@ object TimelineOps {
         var proj = p
         val t = freeVisualTrack(proj, listOf(TrackKind.TEXT, TrackKind.OVERLAY), clip.startUs, clip.endUs)
             ?: run { proj = addTrack(proj, TrackKind.TEXT); proj.tracks.last { it.kind == TrackKind.TEXT } }
+        proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
+        return proj to clip
+    }
+
+    /** Adds a 5 s shape layer on a free Text/Overlay track. */
+    fun addShape(p: Project, atUs: Long, kind: com.amiri.cut.core.model.ShapeKind, durationUs: Long = 5_000_000L): Pair<Project, Clip> {
+        val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
+        val clip = Clip(
+            id = newId(), assetId = "", name = kind.label,
+            startUs = start, sourceInUs = 0, sourceOutUs = durationUs, shape = com.amiri.cut.core.model.ShapeSpec(kind),
+        )
+        var proj = p
+        val t = freeVisualTrack(proj, listOf(TrackKind.OVERLAY, TrackKind.TEXT), clip.startUs, clip.endUs)
+            ?: run { proj = addTrack(proj, TrackKind.OVERLAY); proj.tracks.last { it.kind == TrackKind.OVERLAY } }
         proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
         return proj to clip
     }

@@ -45,11 +45,13 @@ enum class EditorTool(val label: String, val stage: Int) {
     MEDIA("Media", 1),
     CUT("Cut", 1),
     TRANSFORM("Transform", 2),
+    KEYS("Keyframes", 3),
     SPEED("Speed", 2),
     MASK("Mask", 5),
     TRACK("Track", 8),
     ROTO("Roto", 9),
     TEXT("Text", 4),
+    SHAPE("Shape", 4),
     COLOR("Color", 6),
     EFFECTS("Effects", 7),
     AUDIO("Audio", 10),
@@ -465,6 +467,16 @@ class EditorController(
     var rotoBrush by mutableFloatStateOf(0.07f)
     /** Edge feather as a fraction of the frame width. */
     var rotoFeather by mutableFloatStateOf(0.006f)
+    /** Hair brush: matting window (px at mask resolution) and edge contrast. */
+    var rotoHairRadius by mutableFloatStateOf(12f)
+    var rotoHairContrast by mutableFloatStateOf(1.2f)
+
+    /** The exact source frame of the roto target at mask resolution. */
+    private suspend fun rotoFrame(t: RotoTarget, src: Long, w: Int, h: Int): AndroidBitmap? = withContext(Dispatchers.IO) {
+        val b = if (t.asset.type == MediaType.VIDEO) BitmapLoader.videoFrame(app, t.asset, src, maxOf(w, h), exact = true)
+        else BitmapLoader.decodeImage(app, t.asset, maxOf(w, h))
+        b?.let { if (it.width != w || it.height != h) AndroidBitmap.createScaledBitmap(it, w, h, true) else it }
+    }
     /** Off while painting: full frame with the mask tinted; on: background removed. */
     var rotoShowResult by mutableStateOf(false)
     var rotoProgress by mutableStateOf<Float?>(null)
@@ -537,7 +549,16 @@ class EditorController(
                 val fresh = project?.clip(t.clip.id)?.let { t.copy(clip = it) } ?: return@withLock
                 val base = fresh.clip.roto?.keyAt(src)?.let { app.roto.load(projectId, it.file) }
                 val (w, h) = maskSize(t.asset)
-                val bmp = withContext(Dispatchers.Default) { RotoPainter.paint(base, w, h, points, mode, size, feather) }
+                val bmp = if (mode == RotoBrushMode.HAIR) {
+                    val frame = rotoFrame(fresh, src, w, h)
+                    if (frame == null) { toast = Toast("Couldn't read this frame"); return@withLock }
+                    val radius = rotoHairRadius.toInt()
+                    val contrast = rotoHairContrast
+                    withContext(Dispatchers.Default) {
+                        val band = RotoPainter.paint(null, w, h, points, RotoBrushMode.ADD, size, 0f)
+                        com.amiri.cut.media.RotoMatting.refine(frame, base, band, radius, contrast)
+                    }
+                } else withContext(Dispatchers.Default) { RotoPainter.paint(base, w, h, points, mode, size, feather) }
                 writeKey(fresh, src, bmp, "Roto ${mode.label.lowercase()}")
             }
         }
@@ -556,8 +577,17 @@ class EditorController(
         val base = currentRotoMask(t) ?: run { toast = Toast("Paint a mask first"); return }
         scope.launch {
             rotoMutex.withLock {
-                val refined = withContext(Dispatchers.Default) { RotoPropagator.refineEdge(base, radius = 3, softness = 0.35f) }
-                writeKey(t, rotoSourceUs(t), refined, "Refine edge")
+                val src = rotoSourceUs(t)
+                val frame = rotoFrame(t, src, base.width, base.height)
+                val radius = rotoHairRadius.toInt()
+                val contrast = rotoHairContrast
+                val refined = withContext(Dispatchers.Default) {
+                    if (frame != null) {
+                        val band = com.amiri.cut.media.RotoMatting.edgeBand(base, 4)
+                        com.amiri.cut.media.RotoMatting.refine(frame, base, band, radius, contrast)
+                    } else RotoPropagator.refineEdge(base, radius = 3, softness = 0.35f)
+                }
+                writeKey(t, src, refined, "Refine edge")
             }
         }
     }
@@ -656,6 +686,7 @@ class EditorController(
         data class Mask(override val clipId: String, val maskId: String) : PTarget
         data class Text(override val clipId: String) : PTarget
         data class Audio(override val clipId: String) : PTarget
+        data class Shape(override val clipId: String) : PTarget
     }
 
     private var editBase: Project? = null
@@ -696,6 +727,7 @@ class EditorController(
             is PTarget.Mask -> c.masks.firstOrNull { it.id == t.maskId }?.props
             is PTarget.Text -> c.text?.props
             is PTarget.Audio -> c.audio
+            is PTarget.Shape -> c.shape?.props
         }
     }
 
@@ -705,6 +737,7 @@ class EditorController(
         is PTarget.Mask -> c.copy(masks = c.masks.map { if (it.id == t.maskId) it.copy(props = f(it.props)) else it })
         is PTarget.Text -> c.copy(text = c.text?.let { it.copy(props = f(it.props)) })
         is PTarget.Audio -> c.copy(audio = f(c.audio))
+        is PTarget.Shape -> c.copy(shape = c.shape?.let { it.copy(props = f(it.props)) })
     }
 
     /** Clip-local playhead time (for keyframes). */
@@ -788,6 +821,7 @@ class EditorController(
                 effects = c.effects.map { it.copy(props = mv(it.props)) },
                 masks = c.masks.map { it.copy(props = mv(it.props)) },
                 text = c.text?.let { it.copy(props = mv(it.props)) },
+                shape = c.shape?.let { it.copy(props = mv(it.props)) },
             )
         }
         if (live) liveEdit(np) else commit("Move keyframes", np)
@@ -939,6 +973,7 @@ class EditorController(
     /** Pen tool: points (source uv) waiting to be closed into a path mask. */
     var penPoints by mutableStateOf<List<Pair<Float, Float>>>(emptyList())
     var penActive by mutableStateOf(false)
+    var anchorDragging by mutableStateOf(false)
 
     fun addMask(shape: com.amiri.cut.core.model.MaskShape) {
         val m = com.amiri.cut.core.model.ShapeMask(com.amiri.cut.core.model.newId(), shape)
@@ -1151,5 +1186,96 @@ class EditorController(
         val json = app.projects.json.encodeToString(Project.serializer(), p)
         com.amiri.cut.export.ExportQueue.enqueue(app, p.name, p, settings, out, json)
         toast = Toast("Export started — it continues in the background")
+    }
+
+    // ═════════════════════════ Viewer (preview zoom / pan) ═════════════════════════
+
+    /** Preview zoom (1 = fit) and pan as fractions of the preview size (y down). */
+    var viewZoom by mutableFloatStateOf(1f)
+    var viewPanX by mutableFloatStateOf(0f)
+    var viewPanY by mutableFloatStateOf(0f)
+    /** Hide the timeline to give the preview the whole screen (auto on in Roto). */
+    var expandedPreview by mutableStateOf(false)
+
+    fun setView(zoom: Float, panX: Float, panY: Float) {
+        val z = zoom.coerceIn(0.5f, 10f)
+        val lim = 0.5f + z / 2f
+        viewZoom = z
+        viewPanX = panX.coerceIn(-lim, lim)
+        viewPanY = panY.coerceIn(-lim, lim)
+    }
+
+    fun resetView() = setView(1f, 0f, 0f)
+
+    /** Zooms about a focus point given in fractions of the preview (0..1, y down). */
+    fun zoomViewAt(factor: Float, fx: Float, fy: Float) {
+        val z0 = viewZoom
+        val z1 = (z0 * factor).coerceIn(0.5f, 10f)
+        val cx = fx - 0.5f
+        val cy = fy - 0.5f
+        val tx = cx - (cx - viewPanX) * z1 / z0
+        val ty = cy - (cy - viewPanY) * z1 / z0
+        setView(z1, tx, ty)
+    }
+
+    // ═════════════════════════ Shapes ═════════════════════════
+
+    fun addShape(kind: com.amiri.cut.core.model.ShapeKind) {
+        var (np, clip) = TimelineOps.addShape(project ?: return, engine.position.value, kind)
+        if (kind == com.amiri.cut.core.model.ShapeKind.LINE) {
+            np = TimelineOps.updateClip(np, clip.id) { c ->
+                c.copy(shape = c.shape?.copy(props = com.amiri.cut.core.model.Props.of("w" to 0.6f, "h" to 0.015f)))
+            } ?: np
+        }
+        commit("Add ${kind.label}", np)
+        selectedClipId = clip.id
+    }
+
+    fun setShapeKind(kind: com.amiri.cut.core.model.ShapeKind) =
+        updateSelected("Shape type") { c -> c.shape?.let { c.copy(shape = it.copy(kind = kind), name = kind.label) } ?: c }
+
+    // ═════════════════════════ Quick keyframes ═════════════════════════
+
+    private val quickIds = listOf("px", "py", "scale", "rot", "opacity")
+
+    /** Does the selected clip have transform keys at the playhead? */
+    fun quickKeyHere(): Boolean {
+        val c = selectedClip() ?: return false
+        val t = PTarget.Transform(c.id)
+        return quickIds.any { keyHere(t, it) }
+    }
+
+    /** ◆ button: keys Position, Scale, Rotation and Opacity at the playhead (or removes them). */
+    fun toggleQuickKeys() {
+        val c = selectedClip() ?: run { toast = Toast("Select a clip first"); return }
+        if (project?.trackOfClip(c.id)?.acceptsVisual != true) { toast = Toast("Keyframes for sound are in the Audio tool"); return }
+        val p = project ?: return
+        val t = PTarget.Transform(c.id)
+        val lt = localTime(c.id)
+        val tol = keyTolerance()
+        val remove = quickKeyHere()
+        val np = TimelineOps.updateClip(p, c.id) { cl ->
+            withProps(cl, t) { pr ->
+                var out = pr
+                for (id in quickIds) {
+                    val d = com.amiri.cut.core.effects.TransformSpec.def(id)
+                    val prm = out[id] ?: com.amiri.cut.core.model.Param(d)
+                    out = out.with(id, if (remove) prm.withoutKeyNear(lt, tol) else prm.withKey(lt, prm.at(lt), tol))
+                }
+                out
+            }
+        }
+        commit(if (remove) "Remove keyframes" else "Add keyframes", np)
+        focusParam = t to "px"
+        toast = Toast(if (remove) "Keyframes removed" else "Keyframes added — move the playhead and change position, scale, rotation or opacity")
+    }
+
+    /** Moves the anchor point without moving the layer (After Effects "pan behind"). */
+    fun setAnchorKeepingPlace(clipId: String, ax: Float, ay: Float, canvasX: Float, canvasY: Float) {
+        val t = PTarget.Transform(clipId)
+        setParam(t, "ax", ax, 0.5f)
+        setParam(t, "ay", ay, 0.5f)
+        setParam(t, "px", canvasX - 0.5f, 0f)
+        setParam(t, "py", canvasY - 0.5f, 0f)
     }
 }

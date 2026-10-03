@@ -170,8 +170,14 @@ void main() { gl_FragColor = mix(texture2D(uOrig, vUv), texture2D(uTex, vUv), uA
 uniform sampler2D uTex;
 uniform float uChecker;
 uniform float uCell;
+uniform vec3 uView;
 void main() {
-  vec4 c = texture2D(uTex, vUv);
+  // Viewer zoom/pan (matches the Compose overlay transform: scale about center, then translate).
+  float lx = 0.5 + (vUv.x - 0.5 - uView.y) / uView.x;
+  float ly = 0.5 + ((1.0 - vUv.y) - 0.5 - uView.z) / uView.x;
+  vec2 uv = vec2(lx, 1.0 - ly);
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.06, 0.06, 0.07, 1.0); return; }
+  vec4 c = texture2D(uTex, uv);
   vec3 bg = vec3(0.0);
   if (uChecker > 0.5) {
     vec2 q = floor(gl_FragCoord.xy / uCell);
@@ -405,6 +411,50 @@ void main() {
   vec3 L = uColor * band * uIntensity * uOpacity * s.a;
   vec3 rgb = uMode == 1 ? s.rgb + L : s.rgb + L * (1.0 - clamp(s.rgb, 0.0, 1.0));
   gl_FragColor = vec4(min(rgb, vec3(s.a)), s.a);
+}
+"""
+
+    /** After Effects-style CC Light Sweep: a light band (linear/smooth/sharp) plus edge highlights. */
+    const val CC_SWEEP = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uCenter;
+uniform float uDir;
+uniform float uWidth;
+uniform float uIntensity;
+uniform float uEdgeI;
+uniform float uEdgeT;
+uniform vec3 uColor;
+uniform float uAspect;
+uniform vec2 uTexel;
+uniform int uShape;
+uniform int uRecept;
+void main() {
+  vec4 s = texture2D(uTex, vUv);
+  vec2 p = vUv - uCenter;
+  p.x *= uAspect;
+  vec2 n = vec2(cos(uDir), sin(uDir));
+  float d = abs(dot(p, n));
+  float w = max(uWidth, 0.0005);
+  float prof;
+  if (uShape == 0) prof = max(0.0, 1.0 - d / w);
+  else if (uShape == 2) prof = 1.0 - smoothstep(w * 0.85, w, d);
+  else prof = 1.0 - smoothstep(0.0, w, d);
+  vec2 o = uTexel * (1.0 + uEdgeT * 12.0);
+  float gx = texture2D(uTex, vUv + vec2(o.x, 0.0)).a - texture2D(uTex, vUv - vec2(o.x, 0.0)).a;
+  float gy = texture2D(uTex, vUv + vec2(0.0, o.y)).a - texture2D(uTex, vUv - vec2(0.0, o.y)).a;
+  float edge = clamp(length(vec2(gx, gy)) * 2.0, 0.0, 1.0);
+  vec3 light = uColor * (prof * uIntensity * s.a + edge * prof * uEdgeI);
+  if (uRecept == 2) {
+    float a = s.a * clamp(prof * uIntensity + edge * prof * uEdgeI, 0.0, 1.0);
+    gl_FragColor = vec4(uColor * a, a);
+  } else if (uRecept == 1) {
+    vec3 rgb = s.rgb + light * (1.0 - clamp(s.rgb, 0.0, 1.0));
+    float a = clamp(max(s.a, max(max(light.r, light.g), light.b)), 0.0, 1.0);
+    gl_FragColor = vec4(min(rgb, vec3(a)), a);
+  } else {
+    vec3 rgb = s.rgb + light;
+    gl_FragColor = vec4(min(rgb, vec3(s.a)), s.a);
+  }
 }
 """
 

@@ -45,8 +45,8 @@ object BitmapLoader {
             previewCache.get(key) ?: decodeImage(context, asset, maxSide)?.also { previewCache.put(key, it) }
         }
 
-    /** A single frame from a video (used for project covers). */
-    fun videoFrame(context: Context, asset: MediaAsset, atUs: Long, maxSide: Int): Bitmap? {
+    /** A single frame from a video (used for project covers). [exact] decodes the exact frame (slower). */
+    fun videoFrame(context: Context, asset: MediaAsset, atUs: Long, maxSide: Int, exact: Boolean = false): Bitmap? {
         val r = MediaMetadataRetriever()
         return try {
             r.setDataSource(context, Uri.parse(asset.uri))
@@ -54,7 +54,7 @@ object BitmapLoader {
             val h = asset.displayHeight.coerceAtLeast(1)
             val scale = maxSide.toFloat() / max(w, h)
             r.getScaledFrameAtTime(
-                atUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                atUs, if (exact) MediaMetadataRetriever.OPTION_CLOSEST else MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
                 (w * scale).toInt().coerceAtLeast(2), (h * scale).toInt().coerceAtLeast(2),
             )
         } catch (t: Throwable) {

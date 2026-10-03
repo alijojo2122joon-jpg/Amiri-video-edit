@@ -11,7 +11,7 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import kotlin.math.max
 
-enum class RotoBrushMode(val label: String) { ADD("Add"), SUBTRACT("Subtract"), LASSO("Lasso fill"), LASSO_CUT("Lasso cut") }
+enum class RotoBrushMode(val label: String) { ADD("Character · hard"), HAIR("Hair · soft"), SUBTRACT("Subtract"), LASSO("Lasso fill"), LASSO_CUT("Lasso cut") }
 
 /** Rasterizes roto brush strokes into a mask (white + alpha; alpha 255 = keep). */
 object RotoPainter {

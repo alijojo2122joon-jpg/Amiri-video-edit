@@ -45,6 +45,9 @@ class PreviewRenderer(
     /** Preview resolution scale (Full/Half/Quarter). */
     @Volatile var quality: Float = 1f
 
+    /** Viewer zoom/pan: zoom, panX, panY (fractions of the view, y down). */
+    @Volatile var viewXform: FloatArray = floatArrayOf(1f, 0f, 0f)
+
     /** When set, receives a 256-px wide RGBA copy of every 4th frame (scopes). */
     @Volatile var scopeSink: ((ByteArray, Int, Int) -> Unit)? = null
     private var frameCount = 0
@@ -121,15 +124,18 @@ class PreviewRenderer(
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             return
         }
-        val q = quality.coerceIn(0.25f, 1f)
-        val cw = (viewW * q).roundToInt().coerceAtLeast(2)
-        val ch = (viewH * q).roundToInt().coerceAtLeast(2)
+        val v = viewXform
+        // Render more pixels when zoomed in so details stay sharp (capped for the GPU).
+        val q = quality.coerceIn(0.25f, 1f) * v[0].coerceIn(1f, 3f)
+        val cw = (viewW * q).roundToInt().coerceIn(2, 4096)
+        val ch = (viewH * q).roundToInt().coerceIn(2, 4096)
         val sink = scopeSink
         frameCount++
         try {
             c.render(
                 fs.project, fs.timeUs, cw, ch, sources, fs.options, 0, intArrayOf(0, 0, viewW, viewH),
                 capture = if (sink != null && frameCount % 4 == 0) sink else null,
+                view = v,
             )
         } catch (t: Throwable) {
             android.util.Log.e("AmiriPreview", "render failed", t)
