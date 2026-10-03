@@ -36,14 +36,28 @@ jobs:
           fi
 
       - name: Unit tests
-        run: ./gradlew --no-daemon testDebugUnitTest
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon testDebugUnitTest 2>&1 | tee build-log.txt || {
+            grep -E "^e: |error:|FAILED|What went wrong" -A2 build-log.txt | head -120 | while IFS= read -r line; do
+              echo "::error::${line//%/%25}"
+            done
+            exit 1
+          }
 
       - name: Build debug + release APKs
         env:
           AMIRI_KEYSTORE_PASSWORD: ${{ secrets.AMIRI_KEYSTORE_PASSWORD }}
           AMIRI_KEY_ALIAS: ${{ secrets.AMIRI_KEY_ALIAS }}
           AMIRI_KEY_PASSWORD: ${{ secrets.AMIRI_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon assembleDebug assembleRelease
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug assembleRelease 2>&1 | tee build-log2.txt || {
+            grep -E "^e: |error:|FAILED|What went wrong" -A2 build-log2.txt | head -120 | while IFS= read -r line; do
+              echo "::error::${line//%/%25}"
+            done
+            exit 1
+          }
 
       - name: Verify no network permission
         run: |
