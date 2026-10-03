@@ -173,7 +173,7 @@ object TimelineOps {
         if (at - clip.startUs < f || clip.endUs - at < f) return null
         val sourceAt = clip.sourceTimeAt(at)
         val left = clip.copy(sourceOutUs = sourceAt)
-        val right = clip.copy(id = newId(), startUs = at, sourceInUs = sourceAt).shiftKeys(-(at - clip.startUs))
+        val right = clip.copy(id = newId(), startUs = at, sourceInUs = sourceAt, transIn = null).shiftKeys(-(at - clip.startUs))
         val proj = p.mapTrack(track.id) { t -> t.withClips(t.clips.flatMap { if (it.id == clipId) listOf(left, right) else listOf(it) }) }
         return proj to right
     }
@@ -478,6 +478,25 @@ object TimelineOps {
         proj = proj.mapTrack(trackId) { it.withClips(it.clips + sound) }
         proj = proj.mapTrack(track.id) { t -> t.copy(clips = t.clips.map { if (it.id == clipId) it.copy(muted = true) else it }) }
         return proj to sound
+    }
+
+    /** Sets (or clears with null) the transition into [clipId]. */
+    fun setTransition(p: Project, clipId: String, tr: com.amiri.cut.core.model.Transition?): Project? {
+        val track = p.trackOfClip(clipId) ?: return null
+        if (track.locked) return null
+        return p.mapTrack(track.id) { t -> t.copy(clips = t.clips.map { if (it.id == clipId) it.copy(transIn = tr) else it }) }
+    }
+
+    /** Puts [tr] on every cut of [trackId] (clips that start exactly where another ends). */
+    fun setTransitionAllCuts(p: Project, trackId: String, tr: com.amiri.cut.core.model.Transition?): Project? {
+        val track = p.track(trackId) ?: return null
+        if (track.locked) return null
+        return p.mapTrack(track.id) { t ->
+            t.copy(clips = t.clips.map { b ->
+                val hasPrev = t.clips.any { it.id != b.id && kotlin.math.abs(it.endUs - b.startUs) <= 1_000 }
+                if (hasPrev) b.copy(transIn = tr) else b
+            })
+        }
     }
 
     /** Adds an adjustment layer (affects all layers below it) at [atUs]. */

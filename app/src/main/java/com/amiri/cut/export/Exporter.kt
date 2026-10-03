@@ -97,7 +97,7 @@ class Exporter(
         val sources = object : FrameSources {
             override fun video(clip: Clip, asset: MediaAsset): VideoFrame? {
                 val dec = decoders.getOrPut(clip.id) { ExportDecoder(context, asset.uri, frameUs) }
-                val st = clip.sourceTimeAt(currentT)
+                val st = clip.sourceTimeAt(currentT).coerceIn(0L, (asset.durationUs - frameUs).coerceAtLeast(0L))
                 return dec.frameAt(if (reverse) (asset.durationUs - st - frameUs).coerceAtLeast(0) else st)
             }
             override fun image(asset: MediaAsset): Bitmap? =
@@ -158,7 +158,8 @@ class Exporter(
                 compositor.render(project, currentT, w, h, sources, RenderOptions(checker = false), 0, viewport)
                 // Free hardware decoders of clips that have finished.
                 if (n % 15 == 0) {
-                    val done = decoders.keys.filter { id -> (project.clip(id)?.endUs ?: 0L) <= currentT }
+                    // (kept a little longer: transitions show the outgoing clip past its end)
+                    val done = decoders.keys.filter { id -> (project.clip(id)?.endUs ?: 0L) + 3_000_000L <= currentT }
                     done.forEach { id -> decoders.remove(id)?.let { d -> runCatching { d.release() } } }
                 }
                 egl.setPresentationTime(currentT * 1000)

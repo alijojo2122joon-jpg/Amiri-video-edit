@@ -231,6 +231,13 @@ uniform float uSharpen;
 uniform float uBlur;
 uniform float uHasCurve;
 uniform float uHasHsl;
+uniform sampler2D uClarTex;
+uniform float uClarity;
+uniform float uDehaze;
+uniform float uVibrance;
+uniform float uFade;
+uniform vec4 uSplit; // shHue, shSat, hiHue, hiSat
+uniform float uSplitBal;
 
 vec3 rgb2hsv(vec3 c) {
   vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -261,6 +268,22 @@ void main() {
 
   c *= exp2(uExposure);
   c *= vec3(1.0 + 0.18 * uTemp, 1.0 + 0.04 * uTemp - 0.12 * uTint, 1.0 - 0.18 * uTemp);
+  if (abs(uClarity) > 0.001) {
+    vec4 bs = texture2D(uClarTex, vUv);
+    vec3 bc = bs.a > 0.0001 ? bs.rgb / bs.a : c;
+    float lm = luma(c);
+    float mid = 1.0 - pow(abs(lm - 0.5) * 2.0, 2.0);
+    c += (c - bc) * uClarity * 1.4 * mid;
+  }
+  if (abs(uDehaze) > 0.001) {
+    if (uDehaze > 0.0) {
+      float k = uDehaze * 0.12;
+      c = (c - k) / (1.0 - k * 1.6);
+      c = mix(vec3(luma(c)), c, 1.0 + uDehaze * 0.35);
+    } else {
+      c = mix(c, vec3(0.72, 0.74, 0.78), -uDehaze * 0.45);
+    }
+  }
   float bp = -uBlacks * 0.12;
   float wp = 1.0 - uWhites * 0.2;
   c = (c - bp) / max(wp - bp, 0.05);
@@ -295,6 +318,20 @@ void main() {
 
   float L2 = luma(c);
   c = mix(vec3(L2), c, 1.0 + uSaturation);
+  if (abs(uVibrance) > 0.001) {
+    vec3 cc = clamp(c, 0.0, 1.0);
+    float sat = max(cc.r, max(cc.g, cc.b)) - min(cc.r, min(cc.g, cc.b));
+    c = mix(vec3(luma(c)), c, 1.0 + uVibrance * (1.0 - sat) * 1.3);
+  }
+  if (uSplit.y > 0.001 || uSplit.w > 0.001) {
+    float l3 = clamp(luma(c), 0.0, 1.0);
+    float b = uSplitBal * 0.3;
+    float ws = 1.0 - smoothstep(0.0, 0.55 + b, l3);
+    float wh = smoothstep(0.45 + b, 1.0, l3);
+    vec3 ts = hsv2rgb(vec3(uSplit.x, 1.0, 1.0)); ts -= vec3(luma(ts));
+    vec3 th = hsv2rgb(vec3(uSplit.z, 1.0, 1.0)); th -= vec3(luma(th));
+    c += ts * uSplit.y * 0.45 * ws + th * uSplit.w * 0.45 * wh;
+  }
 
   if (uHasCurve > 0.5) {
     c = clamp(c, 0.0, 1.0);
@@ -302,6 +339,10 @@ void main() {
     c = vec3(texture2D(uCurve, vec2(m.r, 0.5)).r, texture2D(uCurve, vec2(m.g, 0.5)).g, texture2D(uCurve, vec2(m.b, 0.5)).b);
   }
 
+  if (uFade > 0.001) {
+    c = clamp(c, 0.0, 1.0);
+    c = c * (1.0 - uFade * 0.22) + uFade * 0.13;
+  }
   if (uVignette > 0.001) {
     vec2 d = vUv - 0.5;
     d.x *= uAspect;
@@ -667,6 +708,213 @@ void main() {
   if (uPin == 3) pin = ey;
   vec2 d = perp * uAmp * wave(ph) * pin;
   gl_FragColor = texture2D(uTex, vUv + vec2(d.x / uAspect, d.y));
+}
+"""
+
+    /**
+     * Transitions. uA / uB are the outgoing / incoming layers already composited onto
+     * transparent canvases (premultiplied); the result is laid over uBase.
+     */
+    const val TRANSITION = COMMON + """
+uniform sampler2D uBase;
+uniform sampler2D uA;
+uniform sampler2D uB;
+uniform float uP;
+uniform int uType;
+uniform vec2 uDir;
+uniform float uAspect;
+uniform float uSoft;
+uniform vec2 uTexel;
+const float PI = 3.14159265;
+vec4 SA(vec2 uv) { return (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) ? vec4(0.0) : texture2D(uA, uv); }
+vec4 SB(vec2 uv) { return (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) ? vec4(0.0) : texture2D(uB, uv); }
+vec2 mirror(vec2 uv) { return 1.0 - abs(1.0 - mod(abs(uv), 2.0)); }
+float ease(float x) { return x * x * (3.0 - 2.0 * x); }
+float easeInOutCubic(float x) { return x < 0.5 ? 4.0 * x * x * x : 1.0 - pow(-2.0 * x + 2.0, 3.0) / 2.0; }
+float vn(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) { float v = 0.0; float a = 0.5; for (int i = 0; i < 5; i++) { v += a * vn(p); p *= 2.03; a *= 0.5; } return v; }
+vec4 blurA(vec2 uv, float r) {
+  vec4 s = vec4(0.0);
+  for (int i = 0; i < 12; i++) { float a = float(i) * 2.39996; float rr = r * sqrt((float(i) + 0.5) / 12.0); s += texture2D(uA, mirror(uv + vec2(cos(a) / uAspect, sin(a)) * rr)); }
+  return s / 12.0;
+}
+vec4 blurB(vec2 uv, float r) {
+  vec4 s = vec4(0.0);
+  for (int i = 0; i < 12; i++) { float a = float(i) * 2.39996; float rr = r * sqrt((float(i) + 0.5) / 12.0); s += texture2D(uB, mirror(uv + vec2(cos(a) / uAspect, sin(a)) * rr)); }
+  return s / 12.0;
+}
+vec4 over(vec4 top, vec4 bot) { return top + bot * (1.0 - top.a); }
+
+vec4 trans(vec2 uv) {
+  float p = uP;
+  vec4 a; vec4 b;
+  if (uType == 0) return mix(SA(uv), SB(uv), p);
+  if (uType == 1) return p < 0.5 ? SA(uv) * (1.0 - ease(p * 2.0)) : SB(uv) * ease(p * 2.0 - 1.0);
+  if (uType == 2) {
+    vec4 w = vec4(1.0);
+    return p < 0.5 ? mix(SA(uv), w, ease(p * 2.0)) : mix(w, SB(uv), ease(p * 2.0 - 1.0));
+  }
+  if (uType == 3) {
+    float r = sin(p * PI) * 0.045;
+    return mix(blurA(uv, r), blurB(uv, r), ease(p));
+  }
+  if (uType == 4) {
+    vec4 bb = SB(uv);
+    float lum = luma(unpremul(bb));
+    float s = 0.02 + uSoft * 0.3;
+    float th = 1.0 + s - p * (1.0 + 2.0 * s);
+    return mix(SA(uv), bb, smoothstep(th - s, th + s, lum));
+  }
+  if (uType == 5) {
+    float n = fbm(uv * vec2(uAspect, 1.0) * 3.5);
+    float s = 0.02 + uSoft * 0.25;
+    float th = p * (1.0 + 2.0 * s) - s;
+    float m = smoothstep(n - s, n + s, th);
+    return mix(SA(uv), SB(uv), m);
+  }
+  if (uType == 6) {
+    float n = fbm(uv * vec2(uAspect, 1.0) * 2.2 + vec2(p * 0.6, 0.0));
+    float th = p * 1.3 - 0.15;
+    float m = smoothstep(n - 0.12, n + 0.12, th);
+    vec4 c = mix(SA(uv), SB(uv), m);
+    float edge = exp(-abs(n - th) * 9.0) * sin(p * PI);
+    vec3 burn = vec3(1.0, 0.55, 0.18) * edge * 2.2 + vec3(1.0, 0.85, 0.6) * pow(sin(p * PI), 3.0) * 0.6;
+    c.rgb += burn * max(c.a, edge);
+    c.a = max(c.a, clamp(edge, 0.0, 1.0));
+    return c;
+  }
+  if (uType == 7) {
+    vec4 c = p < 0.5 ? SA(uv) : SB(uv);
+    float f = pow(1.0 - abs(p * 2.0 - 1.0), 2.5);
+    c.rgb = mix(c.rgb, vec3(1.0), f);
+    c.a = max(c.a, f);
+    return c;
+  }
+  if (uType == 8) {
+    vec4 c = mix(SA(uv), SB(uv), ease(p));
+    float g = sin(p * PI);
+    vec2 q = uv * vec2(uAspect, 1.0);
+    float l1 = exp(-length(q - vec2(-0.2 + p * 1.6 * uAspect, 0.3)) * 2.2);
+    float l2 = exp(-length(q - vec2(uAspect * (1.2 - p * 1.3), 0.8)) * 2.8);
+    vec3 leak = vec3(1.0, 0.45, 0.12) * l1 + vec3(1.0, 0.8, 0.35) * l2;
+    c.rgb = 1.0 - (1.0 - c.rgb) * (1.0 - clamp(leak * g * 1.6, 0.0, 1.0));
+    c.a = max(c.a, clamp((l1 + l2) * g, 0.0, 1.0));
+    return c;
+  }
+  if (uType == 9 || uType == 10) {
+    float e = uType == 9 ? easeInOutCubic(p) : ease(p);
+    vec2 d = uDir;
+    if (uType == 10) return SA(uv + d * e) + SB(uv + d * (e - 1.0));
+    float bl = sin(p * PI) * 0.18;
+    vec4 s = vec4(0.0);
+    for (int i = 0; i < 14; i++) {
+      float o = (float(i) / 13.0 - 0.5) * bl;
+      vec2 u2 = uv + d * (e + o);
+      s += SA(u2) + SB(u2 - d);
+    }
+    return s / 14.0;
+  }
+  if (uType == 11) {
+    float e = easeInOutCubic(p);
+    return over(SB(uv + uDir * (e - 1.0)), SA(uv));
+  }
+  if (uType == 12 || uType == 13) {
+    bool zin = uType == 12;
+    vec2 c0 = vec2(0.5);
+    float e = easeInOutCubic(p);
+    float z = zin ? (p < 0.5 ? 1.0 + e * 2.0 : 1.0 + (1.0 - e) * 2.0) : (p < 0.5 ? 1.0 / (1.0 + e * 1.5) : 1.0 / (1.0 + (1.0 - e) * 1.5));
+    float bl = sin(p * PI) * 0.22;
+    vec4 s = vec4(0.0);
+    for (int i = 0; i < 12; i++) {
+      float k = 1.0 - bl * float(i) / 12.0;
+      vec2 u2 = mirror(c0 + (uv - c0) / z * k);
+      s += p < 0.5 ? texture2D(uA, u2) : texture2D(uB, u2);
+    }
+    vec4 r = s / 12.0;
+    return r;
+  }
+  if (uType == 14) {
+    float e = easeInOutCubic(p);
+    float ang = (p < 0.5 ? e : e - 1.0) * PI * 1.2;
+    float bl = sin(p * PI) * 0.35;
+    float z = 1.0 + sin(p * PI) * 0.6;
+    vec4 s = vec4(0.0);
+    for (int i = 0; i < 12; i++) {
+      float aa = ang - bl * float(i) / 12.0;
+      vec2 d = (uv - 0.5) * vec2(uAspect, 1.0) / z;
+      d = vec2(d.x * cos(aa) - d.y * sin(aa), d.x * sin(aa) + d.y * cos(aa));
+      vec2 u2 = mirror(0.5 + d / vec2(uAspect, 1.0));
+      s += p < 0.5 ? texture2D(uA, u2) : texture2D(uB, u2);
+    }
+    return s / 12.0;
+  }
+  if (uType == 15) {
+    float s = 0.005 + uSoft * 0.2;
+    float x = dot(uv - 0.5, -uDir) + 0.5;
+    float m = smoothstep(x - s, x + s, p * (1.0 + 2.0 * s) - s);
+    return mix(SA(uv), SB(uv), m);
+  }
+  if (uType == 16) {
+    float s = 0.005 + uSoft * 0.2;
+    float r = length((uv - 0.5) * vec2(uAspect, 1.0)) / length(vec2(uAspect, 1.0) * 0.5);
+    float m = smoothstep(r - s, r + s, ease(p) * (1.0 + 2.0 * s) - s);
+    return mix(SA(uv), SB(uv), m);
+  }
+  if (uType == 17) {
+    float s = 0.003 + uSoft * 0.08;
+    vec2 d = (uv - 0.5) * vec2(uAspect, 1.0);
+    float ang = fract(atan(d.x, d.y) / (2.0 * PI) + 0.5);
+    float m = smoothstep(ang - s, ang + s, p * (1.0 + 2.0 * s) - s);
+    return mix(SA(uv), SB(uv), m);
+  }
+  if (uType == 18) {
+    float g = sin(p * PI);
+    float seed = floor(p * 24.0);
+    vec2 blk = floor(uv * vec2(6.0, 28.0));
+    float r = hash(blk + seed);
+    float off = r > 0.55 ? (hash(blk * 1.7 + seed) - 0.5) * 0.35 * g : 0.0;
+    vec2 u2 = vec2(uv.x + off, uv.y);
+    float sh = 0.03 * g;
+    bool useB = p > 0.5 ? hash(vec2(seed, 3.0)) > 0.15 : hash(vec2(seed, 7.0)) > 0.85;
+    vec4 cr = useB ? SB(u2 + vec2(sh, 0.0)) : SA(u2 + vec2(sh, 0.0));
+    vec4 cg = useB ? SB(u2) : SA(u2);
+    vec4 cb = useB ? SB(u2 - vec2(sh, 0.0)) : SA(u2 - vec2(sh, 0.0));
+    vec4 c = vec4(cr.r, cg.g, cb.b, max(cg.a, max(cr.a, cb.a)));
+    float line = step(0.97, hash(vec2(floor(uv.y * 120.0), seed))) * g;
+    c.rgb = mix(c.rgb, vec3(1.0) * c.a, line * 0.6);
+    return c;
+  }
+  if (uType == 19) {
+    float g = sin(p * PI);
+    float cells = mix(1.0, 70.0, g * g);
+    vec2 px = cells * uTexel;
+    vec2 u2 = px.x > 0.0 ? (floor(uv / px) + 0.5) * px : uv;
+    return mix(SA(u2), SB(u2), smoothstep(0.35, 0.65, p));
+  }
+  if (uType == 20) {
+    float g = sin(p * PI);
+    vec2 d = (uv - 0.5) * vec2(uAspect, 1.0);
+    float r = length(d);
+    float k = 1.0 - g * 0.55 * (1.0 - smoothstep(0.0, 0.9, r));
+    vec2 u2 = 0.5 + d * k / vec2(uAspect, 1.0);
+    float ca = g * 0.012;
+    vec2 dir = normalize(d + 1e-5) / vec2(uAspect, 1.0) * ca;
+    vec4 a1 = mix(texture2D(uA, mirror(u2)), texture2D(uB, mirror(u2)), ease(p));
+    vec4 a2 = mix(texture2D(uA, mirror(u2 + dir)), texture2D(uB, mirror(u2 + dir)), ease(p));
+    vec4 a3 = mix(texture2D(uA, mirror(u2 - dir)), texture2D(uB, mirror(u2 - dir)), ease(p));
+    return vec4(a2.r, a1.g, a3.b, a1.a);
+  }
+  return mix(SA(uv), SB(uv), p);
+}
+
+void main() {
+  vec4 t = trans(vUv);
+  t = clamp(t, 0.0, 1.0);
+  t.rgb = min(t.rgb, vec3(t.a));
+  gl_FragColor = over(t, texture2D(uBase, vUv));
 }
 """
 

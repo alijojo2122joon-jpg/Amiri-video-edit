@@ -193,4 +193,38 @@ class TimelineOpsTest {
         assertTrue(m[1].easeOut && !m[1].easeIn)
         assertTrue(m[2].easeIn && m[2].hold)
     }
+
+    @Test fun transitionWindowIsCentredOnCut() {
+        var p = project()
+        p = TimelineOps.appendToMain(p, video("a", 4)).first
+        p = TimelineOps.appendToMain(p, video("b", 4)).first
+        val b = v1(p).clips[1]
+        p = TimelineOps.setTransition(p, b.id, com.amiri.cut.core.model.Transition("dissolve", 1_000_000L))!!
+        val t = v1(p)
+        assertNull(com.amiri.cut.core.model.Transitions.at(t, b.startUs - 600_000L))
+        val s0 = com.amiri.cut.core.model.Transitions.at(t, b.startUs - 500_000L)!!
+        assertEquals(0f, s0.progress, 1e-3f)
+        assertEquals(v1(p).clips[0].id, s0.a!!.id)
+        assertEquals(0.5f, com.amiri.cut.core.model.Transitions.at(t, b.startUs)!!.progress, 1e-3f)
+        assertNull(com.amiri.cut.core.model.Transitions.at(t, b.startUs + 500_000L))
+        // Splitting the incoming clip keeps the transition only on its first part.
+        val (sp, right) = TimelineOps.split(p, b.id, b.startUs + 2_000_000L)!!
+        assertNull(sp.clip(right.id)!!.transIn)
+        assertNotNull(sp.clip(b.id)!!.transIn)
+    }
+
+    @Test fun trackedMaskOrbitsTrackedPoint() {
+        val td = com.amiri.cut.core.model.TrackData(listOf(
+            com.amiri.cut.core.model.TrackSample(0, 0.5f, 0.5f, 1f, 0f),
+            com.amiri.cut.core.model.TrackSample(1_000_000, 0.6f, 0.5f, 2f, 90f),
+        ), scaleRot = true)
+        val m = com.amiri.cut.core.model.ShapeMask("m", com.amiri.cut.core.model.MaskShape.RECT, track = td, trackRefUs = 0)
+        val r0 = com.amiri.cut.core.model.MaskMotion.apply(m, null, 0, 0.6f, 0.5f, 1f)
+        assertEquals(0.6f, r0[0], 1e-4f)
+        val r1 = com.amiri.cut.core.model.MaskMotion.apply(m, null, 1_000_000, 0.6f, 0.5f, 1f)
+        // offset (0.1, 0) rotated 90° and doubled → (0, 0.2) around the new point (0.6, 0.5)
+        assertEquals(0.6f, r1[0], 1e-4f)
+        assertEquals(0.7f, r1[1], 1e-4f)
+        assertEquals(2f, r1[3], 1e-4f)
+    }
 }

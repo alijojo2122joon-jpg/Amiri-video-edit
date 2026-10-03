@@ -78,6 +78,16 @@ object EffectCatalog {
             p("vig_feather", "Vignette feather", 0.05f, 1f, 0.5f),
             p("sharpen", "Sharpen", 0f, 1f, 0f),
             p("blur", "Blur", 0f, 1f, 0f),
+            p("vibrance", "Vibrance", -1f, 1f, 0f),
+            p("fade", "Fade (matte)", 0f, 1f, 0f),
+            p("clarity", "Clarity", -1f, 1f, 0f),
+            p("dehaze", "Dehaze", -1f, 1f, 0f),
+            p("sh_hue", "Shadows hue", 0f, 1f, 0.55f, 360f, "°"),
+            p("sh_sat", "Shadows tint", 0f, 1f, 0f),
+            p("hi_hue", "Highlights hue", 0f, 1f, 0.1f, 360f, "°"),
+            p("hi_sat", "Highlights tint", 0f, 1f, 0f),
+            p("split_bal", "Balance", -1f, 1f, 0f),
+            p("lookAmt", "Look intensity", 0f, 1.5f, 1f),
         ),
         description = "Basic, HSL, curves, color wheels, vignette, sharpen, blur",
     )
@@ -388,4 +398,78 @@ object ShapeSpecDefaults {
         for ((pre, _, d) in COLORS) when (id) { "${pre}r" -> return d[0]; "${pre}g" -> return d[1]; "${pre}b" -> return d[2] }
         return 0f
     }
+}
+
+/** One transition type. [index] selects the branch in Shaders.TRANSITION. */
+data class TransitionSpec(val id: String, val label: String, val index: Int, val directional: Boolean = false, val soft: Boolean = false, val group: String)
+
+/** 20 classic cinematic transitions, all rendered on the GPU (same in preview and export). */
+object TransitionCatalog {
+    val ALL = listOf(
+        TransitionSpec("dissolve", "Cross Dissolve", 0, group = "Dissolve"),
+        TransitionSpec("dipblack", "Dip to Black", 1, group = "Dissolve"),
+        TransitionSpec("dipwhite", "Dip to White", 2, group = "Dissolve"),
+        TransitionSpec("blurdissolve", "Blur Dissolve", 3, group = "Dissolve"),
+        TransitionSpec("luma", "Luma Fade", 4, soft = true, group = "Dissolve"),
+        TransitionSpec("ink", "Ink / Smoke", 5, soft = true, group = "Dissolve"),
+        TransitionSpec("filmburn", "Film Burn", 6, group = "Light"),
+        TransitionSpec("flash", "Flash", 7, group = "Light"),
+        TransitionSpec("lightleak", "Light Leak", 8, group = "Light"),
+        TransitionSpec("whip", "Whip Pan", 9, directional = true, group = "Motion"),
+        TransitionSpec("push", "Push", 10, directional = true, group = "Motion"),
+        TransitionSpec("slide", "Slide", 11, directional = true, group = "Motion"),
+        TransitionSpec("zoomin", "Zoom In", 12, group = "Motion"),
+        TransitionSpec("zoomout", "Zoom Out", 13, group = "Motion"),
+        TransitionSpec("spin", "Spin", 14, group = "Motion"),
+        TransitionSpec("wipe", "Wipe", 15, directional = true, soft = true, group = "Wipe"),
+        TransitionSpec("iris", "Iris Round", 16, soft = true, group = "Wipe"),
+        TransitionSpec("clock", "Clock Wipe", 17, soft = true, group = "Wipe"),
+        TransitionSpec("glitch", "Glitch", 18, group = "Stylize"),
+        TransitionSpec("pixelate", "Pixelate", 19, group = "Stylize"),
+        TransitionSpec("warp", "Lens Warp", 20, group = "Stylize"),
+    )
+    fun spec(id: String) = ALL.firstOrNull { it.id == id }
+    val GROUPS = listOf("Dissolve", "Light", "Motion", "Wipe", "Stylize")
+    val DIRS = listOf("Left", "Right", "Up", "Down")
+}
+
+/**
+ * Color "looks": param offsets added on top of the user's own Color Correction values and
+ * scaled by the look intensity (effect param "lookAmt").
+ */
+object ColorLooks {
+    val LOOKS: List<Pair<String, Map<String, Float>>> = listOf(
+        "Light Nostalgic" to mapOf(
+            "exposure" to 0.08f, "contrast" to -0.2f, "highlights" to -0.22f, "shadows" to 0.2f,
+            "fade" to 0.3f, "saturation" to -0.18f, "vibrance" to 0.06f, "temperature" to 0.3f, "tint" to -0.06f,
+            "sh_hue" to 0.07f, "sh_sat" to 0.22f, "hi_hue" to 0.13f, "hi_sat" to 0.18f, "split_bal" to 0.1f,
+            "clarity" to -0.18f, "vignette" to 0.18f, "gamma_l" to 0.05f,
+        ),
+        "Nostalgic Film" to mapOf(
+            "contrast" to -0.1f, "fade" to 0.38f, "saturation" to -0.25f, "temperature" to 0.38f, "tint" to -0.12f,
+            "sh_hue" to 0.45f, "sh_sat" to 0.2f, "hi_hue" to 0.11f, "hi_sat" to 0.25f, "vignette" to 0.3f, "clarity" to -0.1f,
+        ),
+        "Teal & Orange" to mapOf(
+            "contrast" to 0.15f, "vibrance" to 0.2f, "sh_hue" to 0.52f, "sh_sat" to 0.4f, "hi_hue" to 0.08f, "hi_sat" to 0.35f,
+            "hsl_blue_h" to -0.15f, "hsl_cyan_s" to 0.2f,
+        ),
+        "Cinematic Fade" to mapOf("fade" to 0.32f, "contrast" to 0.12f, "saturation" to -0.18f, "sh_hue" to 0.55f, "sh_sat" to 0.2f, "vignette" to 0.2f),
+        "Blockbuster" to mapOf(
+            "contrast" to 0.28f, "clarity" to 0.22f, "dehaze" to 0.15f, "sh_hue" to 0.52f, "sh_sat" to 0.3f,
+            "hi_hue" to 0.07f, "hi_sat" to 0.28f, "vignette" to 0.28f, "saturation" to -0.05f,
+        ),
+        "Golden Hour" to mapOf("temperature" to 0.45f, "tint" to 0.05f, "highlights" to -0.12f, "vibrance" to 0.25f, "hi_hue" to 0.1f, "hi_sat" to 0.25f, "shadows" to 0.1f),
+        "Kodak Warm" to mapOf("contrast" to 0.12f, "temperature" to 0.2f, "vibrance" to 0.15f, "hi_hue" to 0.1f, "hi_sat" to 0.15f, "sh_hue" to 0.58f, "sh_sat" to 0.1f),
+        "Fuji Green" to mapOf("tint" to -0.18f, "sh_hue" to 0.42f, "sh_sat" to 0.22f, "saturation" to -0.06f, "contrast" to 0.08f, "fade" to 0.1f),
+        "Vintage 70s" to mapOf("fade" to 0.28f, "temperature" to 0.32f, "tint" to 0.1f, "saturation" to -0.12f, "hi_hue" to 0.13f, "hi_sat" to 0.2f, "sh_hue" to 0.93f, "sh_sat" to 0.15f, "contrast" to -0.1f),
+        "Moody Blue" to mapOf("temperature" to -0.32f, "exposure" to -0.15f, "contrast" to 0.22f, "saturation" to -0.28f, "sh_hue" to 0.6f, "sh_sat" to 0.3f, "vignette" to 0.3f),
+        "Pastel Dream" to mapOf("fade" to 0.35f, "contrast" to -0.25f, "vibrance" to 0.2f, "exposure" to 0.12f, "clarity" to -0.25f, "hi_hue" to 0.92f, "hi_sat" to 0.12f, "saturation" to -0.08f),
+        "Cyberpunk" to mapOf("tint" to 0.35f, "temperature" to -0.2f, "contrast" to 0.25f, "vibrance" to 0.35f, "sh_hue" to 0.7f, "sh_sat" to 0.45f, "hi_hue" to 0.86f, "hi_sat" to 0.3f),
+        "Summer Bright" to mapOf("exposure" to 0.12f, "vibrance" to 0.35f, "temperature" to 0.12f, "shadows" to 0.2f, "clarity" to 0.1f, "dehaze" to 0.1f),
+        "Matte" to mapOf("fade" to 0.42f, "contrast" to -0.05f, "saturation" to -0.1f),
+        "Bleach Bypass" to mapOf("saturation" to -0.55f, "contrast" to 0.4f, "clarity" to 0.3f, "blacks" to 0.1f, "fade" to 0.05f),
+        "Black & White" to mapOf("saturation" to -1f, "contrast" to 0.2f, "clarity" to 0.15f),
+        "Noir" to mapOf("saturation" to -1f, "contrast" to 0.55f, "vignette" to 0.5f, "exposure" to -0.1f, "clarity" to 0.2f),
+    )
+    fun look(name: String?): Map<String, Float>? = LOOKS.firstOrNull { it.first == name }?.second
 }

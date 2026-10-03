@@ -275,14 +275,18 @@ class PreviewEngine(private val context: Context) {
 
     private fun syncVideo(p: Project, pos: Long, playing: Boolean, forceSeek: Boolean) {
         val vids = ArrayList<Triple<Track, Clip, MediaAsset>>()
-        for (t in p.tracks) {
+        outer@ for (t in p.tracks) {
             if (!t.acceptsVisual || t.hidden) continue
-            val c = t.clipAt(pos) ?: continue
-            if (c.kind != ClipKind.MEDIA) continue
-            val a = p.asset(c.assetId) ?: continue
-            if (a.type != MediaType.VIDEO) continue
-            vids += Triple(t, c, a)
-            if (vids.size == SLOTS) break
+            // During a transition both the outgoing and the incoming clip are decoded.
+            val ts = com.amiri.cut.core.model.Transitions.at(t, pos)
+            val list = if (ts != null) listOfNotNull(ts.b, ts.a) else listOfNotNull(t.clipAt(pos))
+            for (c in list) {
+                if (c.kind != ClipKind.MEDIA) continue
+                val a = p.asset(c.assetId) ?: continue
+                if (a.type != MediaType.VIDEO) continue
+                vids += Triple(t, c, a)
+                if (vids.size == SLOTS) break@outer
+            }
         }
         val assign = HashMap<String, Int>()
         val used = BooleanArray(SLOTS)
@@ -347,7 +351,7 @@ class PreviewEngine(private val context: Context) {
             if (needSeek) s.player.seekTo(targetMs)
         }
         s.clipId = clip.id
-        s.player.volume = gainAt(track, clip, pos).coerceIn(0f, 1f)
+        s.player.volume = if (clip.contains(pos)) gainAt(track, clip, pos).coerceIn(0f, 1f) else 0f
         val local = pos - clip.startUs
         s.fx.set(
             clip.audio.at("bass", local, 0f), clip.audio.at("mid", local, 0f),

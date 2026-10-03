@@ -804,6 +804,18 @@ private fun DrawScope.drawClip(
     }
     drawRoundRect(borderColor, Offset(left, top), Size(right - left, h), rr, style = Stroke(if (selected || ghost) 2.5f else 1f))
 
+    // Transition marker at the start of the clip (a bow-tie across the cut).
+    clip.transIn?.let { tr ->
+        val half = (tr.durationUs / 2 / 1_000_000.0 * geo.pps).toFloat().coerceAtLeast(6f)
+        val my = top + h * 0.5f
+        val bh = min(h * 0.32f, 12f)
+        val bow = Path().apply {
+            moveTo(x0 - half, my - bh); lineTo(x0 + half, my + bh); lineTo(x0 + half, my - bh); lineTo(x0 - half, my + bh); close()
+        }
+        drawPath(bow, Color(0xFFFFD27A).copy(alpha = 0.85f))
+        drawPath(bow, Color.Black.copy(alpha = 0.6f), style = Stroke(1f))
+    }
+
     // Attached sound: waveform strip right under the picture (louder = taller).
     if (soundH > 0f && asset != null && asset.hasAudio && track.kind != TrackKind.AUDIO) {
         val st = rowY + rowH + 1f

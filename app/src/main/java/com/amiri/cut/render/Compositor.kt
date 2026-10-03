@@ -22,6 +22,7 @@ import com.amiri.cut.core.model.TrackKind
 import com.amiri.cut.core.effects.MaskSpec
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -117,6 +118,11 @@ class Compositor(private val text: TextRenderer) {
 
         for (track in project.tracks.asReversed()) {
             if (track.hidden || track.kind == TrackKind.AUDIO) continue
+            val ts = com.amiri.cut.core.model.Transitions.at(track, t)
+            if (ts != null && ts.b.kind != ClipKind.ADJUSTMENT && ts.a?.kind != ClipKind.ADJUSTMENT) {
+                val out = renderTransition(project, ts, t, cw, ch, src, opt, canvas, spare)
+                if (out != null) { val tmp = canvas; canvas = spare; spare = tmp; continue }
+            }
             val clip = track.clipAt(t) ?: continue
             if (clip.kind == ClipKind.ADJUSTMENT) {
                 val out = applyAdjustment(clip, canvas, t, src, opt)
@@ -276,19 +282,14 @@ class Compositor(private val text: TextRenderer) {
         val masks = clip.masks.take(4)
         var pathIdx = 0
         val pathTexIds = intArrayOf(w, w)
-        val track = clip.tracking
-        val ref = track?.samples?.firstOrNull()
-        val now = track?.at(srcUs)
         masks.forEachIndexed { i, m ->
             fun v(id: String) = m.props.at(id, local, MaskSpec.def(id))
             var x = v("x")
             var y = v("y")
             var rot = v("rot")
             var sx = 1f
-            if (m.followTrack && ref != null && now != null) {
-                x += now.x - ref.x; y += now.y - ref.y
-                rot += now.rot - ref.rot; sx = now.scale / ref.scale.coerceAtLeast(0.01f)
-            }
+            val mm = com.amiri.cut.core.model.MaskMotion.apply(m, clip.tracking, srcUs, x, y, aspect)
+            x = mm[0]; y = mm[1]; rot += mm[2]; sx = mm[3]
             maskA[i * 4] = x; maskA[i * 4 + 1] = y
             maskA[i * 4 + 2] = v("w") * sx; maskA[i * 4 + 3] = v("h") * sx
             maskB[i * 4] = Math.toRadians(rot.toDouble()).toFloat()
@@ -370,6 +371,48 @@ class Compositor(private val text: TextRenderer) {
         p.draw()
     }
 
+    /**
+     * Renders both sides of a transition onto transparent canvases (each with its own
+     * transform, blend and opacity), mixes them with the transition shader and lays the
+     * result over [canvas] into [out]. Returns null if the transition type is unknown.
+     */
+    private fun renderTransition(
+        project: Project, ts: com.amiri.cut.core.model.TransState, t: Long, cw: Int, ch: Int,
+        src: FrameSources, opt: RenderOptions, canvas: Fbo, out: Fbo,
+    ): Fbo? {
+        val spec = com.amiri.cut.core.effects.TransitionCatalog.spec(ts.tr.type) ?: return null
+        fun side(c: Clip?): Fbo {
+            val dst = pool.obtain(cw, ch)
+            dst.clear()
+            if (c == null) return dst
+            val layer = buildLayer(project, c, t, cw, ch, src, opt) ?: return dst
+            val empty = pool.obtain(cw, ch)
+            empty.clear()
+            composite(project, c, layer, t, empty, dst, cw, ch)
+            pool.recycle(empty)
+            pool.recycle(layer.fbo)
+            return dst
+        }
+        val fa = side(ts.a)
+        val fb = side(ts.b)
+        out.bind()
+        val p = prog("transition", Shaders.TRANSITION)
+        p.use()
+        p.tex("uBase", 0, canvas.tex)
+        p.tex("uA", 1, fa.tex)
+        p.tex("uB", 2, fb.tex)
+        p.f1("uP", ts.progress)
+        p.i1("uType", spec.index)
+        val d = when (ts.tr.dir) { 1 -> floatArrayOf(-1f, 0f); 2 -> floatArrayOf(0f, -1f); 3 -> floatArrayOf(0f, 1f); else -> floatArrayOf(1f, 0f) }
+        p.f2("uDir", d[0], d[1])
+        p.f1("uAspect", cw.toFloat() / ch)
+        p.f1("uSoft", ts.tr.softness)
+        p.f2("uTexel", 1f / cw, 1f / ch)
+        p.draw()
+        pool.recycle(fa); pool.recycle(fb)
+        return out
+    }
+
     fun inverseMatrix(project: Project, clip: Clip, ts: Long, baseW: Float, baseH: Float, cw: Int, ch: Int, dst: FloatArray, off: Int) =
         LayerMath.inverse(project, clip, ts, baseW, baseH, cw, ch, dst, off)
 
@@ -439,7 +482,21 @@ class Compositor(private val text: TextRenderer) {
 
         when (e.type) {
             "color" -> {
+                // A chosen look adds its offsets (× intensity) on top of the user's values.
+                val look = com.amiri.cut.core.effects.ColorLooks.look(e.opts["look"])
+                val amt = if (look != null) v("lookAmt") else 0f
+                fun v(id: String): Float {
+                    val base = e.props.at(id, local, spec.param(id)?.default ?: 0f)
+                    val lv = look?.get(id) ?: return base
+                    if (id.endsWith("_hue")) {
+                        val satId = id.removeSuffix("_hue") + "_sat"
+                        return if (e.props.at(satId, local, 0f) == 0f) lv else base
+                    }
+                    return base + lv * amt
+                }
                 val blurAmt = v("blur")
+                val clar = v("clarity")
+                val clarTex = if (abs(clar) > 0.001f) blur(input, 2f + 0.012f * maxDim) else null
                 val blurred = if (blurAmt > 0.001f) blur(input, 2f + blurAmt * 0.03f * maxDim) else null
                 val curveKey = listOf("curve_m", "curve_r", "curve_g", "curve_b").joinToString("|") { e.opts[it] ?: CurveBuilder.IDENTITY }
                 val hasCurve = listOf("curve_m", "curve_r", "curve_g", "curve_b").any { !CurveBuilder.isIdentity(e.opts[it]) }
@@ -472,8 +529,12 @@ class Compositor(private val text: TextRenderer) {
                     p.f1("uVignette", v("vignette")); p.f1("uVigFeather", v("vig_feather"))
                     p.f1("uSharpen", v("sharpen")); p.f1("uBlur", blurAmt)
                     p.f1("uHasCurve", if (hasCurve) 1f else 0f)
+                    p.tex("uClarTex", 3, clarTex?.tex ?: input.tex)
+                    p.f1("uClarity", clar); p.f1("uDehaze", v("dehaze")); p.f1("uVibrance", v("vibrance")); p.f1("uFade", v("fade"))
+                    p.f4("uSplit", v("sh_hue"), v("sh_sat"), v("hi_hue"), v("hi_sat")); p.f1("uSplitBal", v("split_bal"))
                 }
                 blurred?.let { pool.recycle(it) }
+                clarTex?.let { pool.recycle(it) }
             }
             "lut" -> {
                 val name = e.opts["file"]

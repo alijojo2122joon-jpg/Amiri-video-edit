@@ -44,11 +44,13 @@ enum class Placement { APPEND_TO_MAIN, AT_PLAYHEAD, BIN_ONLY }
 enum class EditorTool(val label: String, val stage: Int) {
     MEDIA("Media", 1),
     CUT("Cut", 1),
+    TRANSITION("Transitions", 2),
     TRANSFORM("Transform", 2),
     KEYS("Keyframes", 3),
     SPEED("Speed", 2),
     MASK("Mask", 5),
     TRACK("Track", 8),
+    STABILIZE("Stabilize", 8),
     ROTO("Roto", 9),
     TEXT("Text", 4),
     SHAPE("Shape", 4),
@@ -1013,27 +1015,111 @@ class EditorController(
     /** Regions to track (source uv). One = position; two = position + scale + rotation. */
     var trackRegions by mutableStateOf(listOf(android.graphics.RectF(0.42f, 0.42f, 0.58f, 0.58f)))
 
-    fun trackForward() {
+    var trackMode by mutableStateOf(com.amiri.cut.media.MotionTracker.Mode.POSITION)
+
+    /**
+     * Joins newly tracked samples to existing data: keeps old samples on the other side of
+     * [from] and offsets the new ones so position, scale and rotation continue smoothly.
+     */
+    private fun mergeTrack(old: com.amiri.cut.core.model.TrackData?, new: List<com.amiri.cut.core.model.TrackSample>, from: Long, dir: Int, scaleRot: Boolean): com.amiri.cut.core.model.TrackData {
+        val base = old?.at(from)
+        val anchor = new.firstOrNull { it.sourceUs == from } ?: (if (dir > 0) new.first() else new.last())
+        val adj = if (old == null || base == null || old.samples.isEmpty()) new else new.map {
+            it.copy(
+                x = it.x + (base.x - anchor.x), y = it.y + (base.y - anchor.y),
+                scale = it.scale * base.scale / anchor.scale.coerceAtLeast(0.01f), rot = it.rot + base.rot - anchor.rot,
+            )
+        }
+        val keep = old?.samples?.filter { if (dir > 0) it.sourceUs < from else it.sourceUs > from } ?: emptyList()
+        return com.amiri.cut.core.model.TrackData((keep + adj).sortedBy { it.sourceUs }, scaleRot = scaleRot || (old?.scaleRot == true))
+    }
+
+    /** Tracks the selected video clip from the playhead: [dir] 1 forward, -1 backward, 0 both ways. */
+    fun track(dir: Int) {
         val c = selectedClip() ?: run { toast = Toast("Select the video clip to track"); return }
         val p = project ?: return
         val a = p.asset(c.assetId) ?: return
         if (a.type != MediaType.VIDEO) { toast = Toast("Tracking needs a video clip"); return }
         val pos = engine.position.value.coerceIn(c.startUs, c.endUs - 1)
-        val from = c.sourceTimeAt(pos)
-        val to = (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1)
+        val from = c.sourceTimeAt(pos).coerceIn(0, a.durationUs - 1)
         val step = 1_000_000L / p.settings.fps
-        val regions = trackRegions.map { android.graphics.RectF(it) }
+        val mode = trackMode
+        val regions = (if (mode == com.amiri.cut.media.MotionTracker.Mode.TWO_POINT) trackRegions.take(2) else trackRegions.take(1)).map { android.graphics.RectF(it) }
+        if (mode == com.amiri.cut.media.MotionTracker.Mode.TWO_POINT && regions.size < 2) { toast = Toast("Place both boxes first"); return }
         runBusy("Tracking") { cancel, prog ->
-            val samples = withContext(Dispatchers.Default) {
-                com.amiri.cut.media.MotionTracker.track(app, a, from, to, step, regions, { cancel.get() }, prog)
+            var data = project?.clip(c.id)?.tracking
+            var lost: Long? = null
+            var count = 0
+            for (d in if (dir == 0) listOf(-1, 1) else listOf(dir)) {
+                val to = if (d > 0) (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1) else c.sourceInUs.coerceAtLeast(0)
+                if (to == from) continue
+                val r = withContext(Dispatchers.Default) {
+                    com.amiri.cut.media.MotionTracker.track(app, a, from, to, step * d, regions, mode, { cancel.get() }, { f -> prog(if (dir == 0) (if (d < 0) f / 2 else 0.5f + f / 2) else f) })
+                }
+                if (r.samples.size >= 2) { data = mergeTrack(data, r.samples, from, d, mode != com.amiri.cut.media.MotionTracker.Mode.POSITION); count += r.samples.size }
+                if (r.lostAtUs != null) lost = r.lostAtUs
             }
-            if (samples.size < 2) { toast = Toast("Couldn't track — choose a textured area"); return@runBusy }
+            if (count < 2 || data == null) { toast = Toast("Couldn't track — choose a detailed area (edges, texture, contrast)"); return@runBusy }
             val cur = project ?: return@runBusy
-            val old = cur.clip(c.id)?.tracking?.samples?.filter { it.sourceUs < from } ?: emptyList()
-            val data = com.amiri.cut.core.model.TrackData(old + samples, scaleRot = regions.size >= 2)
             commit("Track", TimelineOps.updateClip(cur, c.id) { it.copy(tracking = data) })
-            toast = Toast("Tracked ${samples.size} frames")
+            toast = Toast(if (lost != null) "Tracked $count frames · target lost — place the box again there and continue" else "Tracked $count frames")
         }
+    }
+
+    fun trackForward() = track(1)
+
+    /**
+     * Tracks a mask by its own area (position, and scale & rotation in Similarity mode) so
+     * it sticks to what it covers. [dir] 1 forward, -1 backward, 0 both ways.
+     */
+    fun trackMask(maskId: String, dir: Int) {
+        val c = selectedClip() ?: return
+        val p = project ?: return
+        val a = p.asset(c.assetId) ?: return
+        if (a.type != MediaType.VIDEO) { toast = Toast("Mask tracking needs a video clip"); return }
+        val m = c.masks.firstOrNull { it.id == maskId } ?: return
+        val pos = engine.position.value.coerceIn(c.startUs, c.endUs - 1)
+        val local = pos - c.startUs
+        val from = c.sourceTimeAt(pos).coerceIn(0, a.durationUs - 1)
+        fun mv(id: String) = m.props.at(id, local, com.amiri.cut.core.effects.MaskSpec.def(id))
+        // Where the mask is shown right now (its current track offset applied).
+        var x = mv("x"); var y = mv("y")
+        val td = m.track
+        if (td != null && td.samples.isNotEmpty()) {
+            val ref = m.trackRefUs?.let { td.at(it) } ?: td.samples.first()
+            td.at(from)?.let { now -> x += now.x - ref.x; y += now.y - ref.y }
+        }
+        val mw = mv("w").coerceIn(0.03f, 0.6f); val mh = mv("h").coerceIn(0.03f, 0.6f)
+        val region = android.graphics.RectF(x - mw / 2, y - mh / 2, x + mw / 2, y + mh / 2)
+        val mode = if (trackMode == com.amiri.cut.media.MotionTracker.Mode.POSITION) com.amiri.cut.media.MotionTracker.Mode.POSITION else com.amiri.cut.media.MotionTracker.Mode.SIMILARITY
+        val step = 1_000_000L / p.settings.fps
+        runBusy("Tracking mask") { cancel, prog ->
+            var data = td
+            var count = 0
+            var lost: Long? = null
+            for (d in if (dir == 0) listOf(-1, 1) else listOf(dir)) {
+                val to = if (d > 0) (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1) else c.sourceInUs.coerceAtLeast(0)
+                if (to == from) continue
+                val r = withContext(Dispatchers.Default) {
+                    com.amiri.cut.media.MotionTracker.track(app, a, from, to, step * d, listOf(region), mode, { cancel.get() }, { f -> prog(if (dir == 0) (if (d < 0) f / 2 else 0.5f + f / 2) else f) })
+                }
+                if (r.samples.size >= 2) { data = mergeTrack(data, r.samples, from, d, mode != com.amiri.cut.media.MotionTracker.Mode.POSITION); count += r.samples.size }
+                if (r.lostAtUs != null) lost = r.lostAtUs
+            }
+            val newData = data
+            if (count < 2 || newData == null) { toast = Toast("Couldn't track this mask — make it cover a detailed area"); return@runBusy }
+            val cur = project ?: return@runBusy
+            // First track: the mask sits where it was drawn at this frame.
+            val refUs = if (td == null) from else m.trackRefUs
+            commit("Track mask", TimelineOps.updateClip(cur, c.id) { cl ->
+                cl.copy(masks = cl.masks.map { if (it.id == maskId) it.copy(track = newData, trackRefUs = refUs, followTrack = false) else it })
+            })
+            toast = Toast(if (lost != null) "Mask tracked $count frames · target lost at one point" else "Mask tracked $count frames")
+        }
+    }
+
+    fun clearMaskTrack(maskId: String) = updateSelected("Clear mask track") { c ->
+        c.copy(masks = c.masks.map { if (it.id == maskId) it.copy(track = null, trackRefUs = null) else it })
     }
 
     fun clearTracking() = updateSelected("Clear track") { it.copy(tracking = null) }
@@ -1045,6 +1131,42 @@ class EditorController(
         updateSelected("Attach to track") { it.copy(follow = com.amiri.cut.core.model.Follow(targetClipId, ref, position, scale, rotation)) }
     }
 
+    // ═════════════════════════ Transitions ═════════════════════════
+
+    /** The cut the transition tools work on: the clip (on the selected clip's track) whose start is nearest the playhead. */
+    fun transitionTarget(): Clip? {
+        val p = project ?: return null
+        val sel = selectedClip()
+        val track = sel?.let { p.trackOfClip(it.id) } ?: p.tracks.firstOrNull { it.kind == TrackKind.VIDEO } ?: return null
+        if (!track.acceptsVisual) return null
+        val pos = engine.position.value
+        val withPrev = track.clips.filter { b -> track.clips.any { it.id != b.id && kotlin.math.abs(it.endUs - b.startUs) <= 1_000 } }
+        return withPrev.minByOrNull { kotlin.math.abs(it.startUs - pos) } ?: track.clips.minByOrNull { kotlin.math.abs(it.startUs - pos) }
+    }
+
+    fun setTransition(clipId: String, tr: com.amiri.cut.core.model.Transition?, label: String = if (tr == null) "Remove transition" else "Transition") {
+        val p = project ?: return
+        val np = TimelineOps.setTransition(p, clipId, tr) ?: run { toast = Toast("That track is locked"); return }
+        commit(label, np)
+    }
+
+    fun setTransitionAllCuts(clipId: String) {
+        val p = project ?: return
+        val tr = p.clip(clipId)?.transIn ?: return
+        val track = p.trackOfClip(clipId) ?: return
+        val np = TimelineOps.setTransitionAllCuts(p, track.id, tr) ?: return
+        commit("Transition on all cuts", np)
+        toast = Toast("Applied to every cut on ${track.name}")
+    }
+
+    /** Previews the transition: plays from just before the cut. */
+    fun previewTransition(clipId: String) {
+        val c = project?.clip(clipId) ?: return
+        val d = c.transIn?.durationUs ?: 600_000L
+        engine.seekTo((c.startUs - d / 2 - 400_000L).coerceAtLeast(0))
+        engine.play()
+    }
+
     // ═════════════════════════ Stabilization ═════════════════════════
 
     fun stabilize(mode: com.amiri.cut.core.model.StabMode, smoothness: Float, zoom: Float) {
@@ -1054,15 +1176,17 @@ class EditorController(
         if (a.type != MediaType.VIDEO) { toast = Toast("Stabilization needs a video clip"); return }
         val step = 1_000_000L / p.settings.fps
         runBusy("Stabilizing") { cancel, prog ->
-            val samples = withContext(Dispatchers.Default) {
+            val res = withContext(Dispatchers.Default) {
                 com.amiri.cut.media.Stabilizer.analyze(app, a, c.sourceInUs, (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1), step, mode, smoothness, { cancel.get() }, prog)
             }
-            if (samples.isEmpty()) { toast = Toast("Couldn't analyze this clip"); return@runBusy }
+            if (res.samples.isEmpty()) { toast = Toast("Couldn't analyze this clip"); return@runBusy }
             val cur = project ?: return@runBusy
+            // zoom < 1 = automatic: just enough to hide the moving borders.
+            val z = if (zoom < 1f) res.autoZoom else zoom
             commit("Stabilize", TimelineOps.updateClip(cur, c.id) {
-                it.copy(stab = com.amiri.cut.core.model.Stabilization(mode, smoothness, zoom, true, samples))
+                it.copy(stab = com.amiri.cut.core.model.Stabilization(mode, smoothness, z, true, res.samples))
             })
-            toast = Toast("Stabilized")
+            toast = Toast("Stabilized · zoom ${"%.2f".format(z)}×")
         }
     }
 

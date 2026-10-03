@@ -53,6 +53,8 @@ import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.Category
+import androidx.compose.material.icons.outlined.Animation
+import androidx.compose.material.icons.outlined.CenterFocusWeak
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.CloseFullscreen
@@ -298,6 +300,8 @@ private fun EditorTool.icon(): ImageVector = when (this) {
     EditorTool.AUDIO -> Icons.Outlined.GraphicEq
     EditorTool.KEYS -> Icons.Outlined.Timeline
     EditorTool.SHAPE -> Icons.Outlined.Category
+    EditorTool.TRANSITION -> Icons.Outlined.Animation
+    EditorTool.STABILIZE -> Icons.Outlined.CenterFocusWeak
 }
 
 @Composable

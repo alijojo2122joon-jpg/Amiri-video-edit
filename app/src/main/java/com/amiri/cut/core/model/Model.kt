@@ -118,7 +118,33 @@ data class ShapeMask(
     val path: List<Float> = emptyList(),
     /** Follow this clip's own motion-tracking data. */
     val followTrack: Boolean = false,
+    /** The mask's own tracking data (tracked from its own region). Takes priority over [followTrack]. */
+    val track: TrackData? = null,
+    /** Source time at which the mask sits where it was drawn (reference for [track] / [followTrack]). */
+    val trackRefUs: Long? = null,
 )
+
+/** Where a tracked mask is shown: it orbits the tracked point with its scale and rotation. */
+object MaskMotion {
+    /** Returns x, y, rotation delta (deg) and scale for a mask whose own centre is (x, y). */
+    fun apply(m: ShapeMask, clipTrack: TrackData?, srcUs: Long, x: Float, y: Float, aspect: Float): FloatArray {
+        val td = m.track ?: clipTrack?.takeIf { m.followTrack }
+        if (td == null || td.samples.isEmpty()) return floatArrayOf(x, y, 0f, 1f)
+        val ref = m.trackRefUs?.let { td.at(it) } ?: td.samples.first()
+        val now = td.at(srcUs) ?: return floatArrayOf(x, y, 0f, 1f)
+        val ds = now.scale / ref.scale.coerceAtLeast(0.01f)
+        val dr = Math.toRadians((now.rot - ref.rot).toDouble())
+        val ox = (x - ref.x) * aspect
+        val oy = y - ref.y
+        val cs = kotlin.math.cos(dr).toFloat(); val sn = kotlin.math.sin(dr).toFloat()
+        return floatArrayOf(
+            now.x + (ox * cs - oy * sn) * ds / aspect,
+            now.y + (ox * sn + oy * cs) * ds,
+            now.rot - ref.rot,
+            ds,
+        )
+    }
+}
 
 /** Text layer content and style. Animatable values live in [props] (see TextDefaults). */
 @Serializable
@@ -150,6 +176,41 @@ data class ShapeSpec(
     val roundCaps: Boolean = true,
 ) {
     val vertexCount: Int get() = path.size / 6
+}
+
+/**
+ * A transition at the cut where a clip starts. [type] is an id from TransitionCatalog.
+ * It is centred on the cut: the outgoing clip continues past its end (using its source
+ * handle, or holding its last frame) while the incoming clip starts early.
+ */
+@Serializable
+data class Transition(
+    val type: String,
+    val durationUs: Long = 600_000L,
+    /** Direction for directional types: 0 left, 1 right, 2 up, 3 down. */
+    val dir: Int = 0,
+    val softness: Float = 0.3f,
+)
+
+/** The state of a transition at one timeline time. [a] is null when nothing precedes [b]. */
+data class TransState(val a: Clip?, val b: Clip, val progress: Float, val tr: Transition)
+
+object Transitions {
+    /** The active transition on [track] at [t], if any. */
+    fun at(track: Track, t: Long): TransState? {
+        for (b in track.clips) {
+            val tr = b.transIn ?: continue
+            if (tr.durationUs <= 0) continue
+            val a = track.clips.firstOrNull { it.id != b.id && kotlin.math.abs(it.endUs - b.startUs) <= 1_000 }
+            var half = minOf(tr.durationUs / 2, b.durationUs / 2)
+            if (a != null) half = minOf(half, a.durationUs / 2)
+            if (half <= 0) continue
+            val ws = if (a != null) b.startUs - half else b.startUs
+            val we = if (a != null) b.startUs + half else b.startUs + 2 * half
+            if (t >= ws && t < we) return TransState(a, b, ((t - ws).toDouble() / (we - ws)).toFloat().coerceIn(0f, 1f), tr)
+        }
+        return null
+    }
 }
 
 /** How a keyframe is drawn on the timeline: ease on its incoming / outgoing side, or hold. */
@@ -207,7 +268,7 @@ data class Follow(
 )
 
 @Serializable
-enum class StabMode { BASIC, ADVANCED }
+enum class StabMode { BASIC, ADVANCED, LOCK }
 
 /** Per-frame stabilization correction (source time → canvas-relative offset). */
 @Serializable
@@ -267,6 +328,8 @@ data class Clip(
     val tracking: TrackData? = null,
     val follow: Follow? = null,
     val stab: Stabilization? = null,
+    /** Transition into this clip from the clip that ends where this one starts (same track). */
+    val transIn: Transition? = null,
 ) {
     val kind: ClipKind get() = when {
         text != null -> ClipKind.TEXT

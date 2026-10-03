@@ -547,8 +547,10 @@ private fun MaskGizmo(c: EditorController, p: Project, pos: Long) {
         for (m in clip.masks) {
             val sel = m.id == mask?.id
             fun v(id: String) = m.props.at(id, lt, MaskSpec.def(id))
-            val cx = v("x"); val cy = v("y"); val hw = v("w") / 2 + v("expand") / aspect; val hh = v("h") / 2 + v("expand")
-            val r = Math.toRadians(v("rot").toDouble())
+            val srcUs = clip.sourceTimeAt(pos)
+            val mm = com.amiri.cut.core.model.MaskMotion.apply(m, clip.tracking, srcUs, v("x"), v("y"), aspect)
+            val cx = mm[0]; val cy = mm[1]; val hw = v("w") * mm[3] / 2 + v("expand") / aspect; val hh = v("h") * mm[3] / 2 + v("expand")
+            val r = Math.toRadians((v("rot") + mm[2]).toDouble())
             fun local(lx: Float, ly: Float): Offset {
                 // Rotate in aspect-corrected space, then back to uv.
                 val x = lx * aspect; val y = ly

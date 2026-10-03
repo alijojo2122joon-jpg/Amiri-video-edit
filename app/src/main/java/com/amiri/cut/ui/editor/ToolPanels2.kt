@@ -459,11 +459,28 @@ internal fun MaskPanel(c: EditorController) {
         ChoiceChips(MaskMode.entries.toList(), sel.mode, { it.name.lowercase().replaceFirstChar { ch -> ch.uppercase() } }) { m -> c.updateMask(sel.id, "Mask mode") { it.copy(mode = m) } }
         Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ToggleChip("Invert", sel.invert) { c.updateMask(sel.id, "Invert mask") { it.copy(invert = !it.invert) } }
-            ToggleChip("Follow track", sel.followTrack) {
-                if (clip.tracking == null) c.toast = Toast("Track this clip first (Track tool)")
-                else c.updateMask(sel.id, "Mask follows track") { it.copy(followTrack = !it.followTrack) }
+            ToggleChip("Follow clip track", sel.followTrack) {
+                if (clip.tracking == null) c.toast = Toast("Track this clip first (Track tool), or use Track mask below")
+                else {
+                    val ref = clip.sourceTimeAt(c.engine.position.value.coerceIn(clip.startUs, clip.endUs - 1))
+                    c.updateMask(sel.id, "Mask follows track") { it.copy(followTrack = !it.followTrack, trackRefUs = if (!it.followTrack) ref else it.trackRefUs, track = null) }
+                }
             }
             ToggleChip("Delete", false) { c.deleteMask(sel.id) }
+        }
+        if (c.project?.asset(clip.assetId)?.type == MediaType.VIDEO) {
+            SectionTitle("Track mask")
+            val M = com.amiri.cut.media.MotionTracker.Mode
+            ChoiceChips(listOf(M.POSITION, M.SIMILARITY), if (c.trackMode == M.POSITION) M.POSITION else M.SIMILARITY, {
+                if (it == M.POSITION) "Position" else "Position + scale + rotation"
+            }) { c.trackMode = it }
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                PanelAction(Icons.Outlined.ChevronLeft, "◀ Track") { c.trackMask(sel.id, -1) }
+                PanelAction(Icons.Outlined.PlayArrow, "Track ▶") { c.trackMask(sel.id, 1) }
+                PanelAction(Icons.Outlined.ZoomOutMap, "◀ Both ▶") { c.trackMask(sel.id, 0) }
+                if (sel.track != null) PanelAction(Icons.Outlined.DeleteOutline, "Clear track") { c.clearMaskTrack(sel.id) }
+            }
+            Hint(if (sel.track != null) "Mask tracked: ${sel.track.samples.size} frames. It follows what it covers." else "Draw the mask around an object, then track it — the mask follows the object by itself.")
         }
         KeyframeBar(c, clip)
         val t = EditorController.PTarget.Mask(clip.id, sel.id)
@@ -476,47 +493,39 @@ internal fun MaskPanel(c: EditorController) {
 
 @Composable
 internal fun TrackPanel(c: EditorController) {
-    val clip = visualSelected(c) ?: return NeedClip("Select the video clip you want to track or stabilize.")
+    val clip = visualSelected(c) ?: return NeedClip("Select the video clip you want to track.")
     val p = c.project ?: return
     val asset = p.asset(clip.assetId)
     val isVideo = asset?.type == MediaType.VIDEO
+    val M = com.amiri.cut.media.MotionTracker.Mode
     Column {
         if (isVideo) {
             SectionTitle("Motion tracking")
-            ChoiceChips(listOf(1, 2), c.trackRegions.size, { if (it == 1) "1 point · position" else "2 points · + scale & rotation" }) { n ->
-                c.trackRegions = if (n == 1) c.trackRegions.take(1)
-                else (c.trackRegions.take(1) + android.graphics.RectF(0.62f, 0.42f, 0.74f, 0.58f))
+            ChoiceChips(M.entries.toList(), c.trackMode, {
+                when (it) { M.POSITION -> "Position"; M.SIMILARITY -> "Position + scale + rotation"; M.TWO_POINT -> "2 points" }
+            }) { m ->
+                c.trackMode = m
+                c.trackRegions = if (m == M.TWO_POINT && c.trackRegions.size < 2) c.trackRegions.take(1) + android.graphics.RectF(0.62f, 0.42f, 0.74f, 0.58f)
+                else if (m != M.TWO_POINT) c.trackRegions.take(1) else c.trackRegions
             }
-            Hint("Place the box(es) on a detailed area on the preview, then track from the playhead forward.")
-            Row {
-                PanelAction(Icons.Outlined.PlayArrow, "Track ▶") { c.trackForward() }
+            Hint(when (c.trackMode) {
+                M.POSITION -> "Put the box on a detailed spot (corner, logo, eye). Fast and very stable; corrects drift against the first frame."
+                M.SIMILARITY -> "Make the box cover the whole object (face, sign, phone screen). Follows its size and rotation too."
+                M.TWO_POINT -> "Two boxes on two far-apart details of the object; their line gives scale and rotation."
+            })
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                PanelAction(Icons.Outlined.ChevronLeft, "◀ Track back") { c.track(-1) }
+                PanelAction(Icons.Outlined.PlayArrow, "Track ▶") { c.track(1) }
+                PanelAction(Icons.Outlined.ZoomOutMap, "◀ Both ▶") { c.track(0) }
                 PanelAction(Icons.Outlined.DeleteOutline, "Clear", enabled = clip.tracking != null) { c.clearTracking() }
             }
-            clip.tracking?.let { Hint("Track data: ${it.samples.size} frames${if (it.scaleRot) " · scale & rotation" else ""}. Attach text or overlays to it below, or use it in Mask → Follow track.") }
-
-            SectionTitle("Stabilize")
-            var mode by remember(clip.id) { mutableStateOf(clip.stab?.mode ?: StabMode.BASIC) }
-            var smooth by remember(clip.id) { mutableFloatStateOf(clip.stab?.smoothness ?: 0.5f) }
-            var zoom by remember(clip.id) { mutableFloatStateOf(clip.stab?.zoom ?: 1.08f) }
-            ChoiceChips(StabMode.entries.toList(), mode, { if (it == StabMode.BASIC) "Basic · position" else "Advanced · + rotation & scale" }) { mode = it }
-            LabeledSlider("Smooth", smooth, 0f..1f, "${(smooth * 100).toInt()}%") { smooth = it }
-            LabeledSlider("Zoom", zoom, 1f..1.3f, "${"%.2f".format(zoom)}×") { zoom = it }
-            Row {
-                PanelAction(Icons.Outlined.PlayArrow, "Analyze") { c.stabilize(mode, smooth, zoom) }
-                clip.stab?.let { st ->
-                    PanelAction(if (st.enabled) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, if (st.enabled) "Disable" else "Enable") {
-                        c.updateSelected("Stabilization") { it.copy(stab = it.stab?.copy(enabled = !st.enabled)) }
-                    }
-                    PanelAction(Icons.Outlined.ZoomOutMap, "Set zoom") { c.updateSelected("Stabilize zoom") { it.copy(stab = it.stab?.copy(zoom = zoom)) } }
-                    PanelAction(Icons.Outlined.DeleteOutline, "Remove") { c.updateSelected("Remove stabilization") { it.copy(stab = null) } }
-                }
-            }
+            clip.tracking?.let { Hint("Track data: ${it.samples.size} frames${if (it.scaleRot) " · scale & rotation" else ""}. Use it below (attach layers) or in Mask → Follow track. If the target was lost, move the playhead there, re-place the box and track again — the new part joins smoothly.") }
         }
 
         SectionTitle("Attach to a track")
         val trackers = p.tracks.flatMap { it.clips }.filter { it.id != clip.id && it.tracking != null }
         if (trackers.isEmpty()) {
-            Hint("No tracked clips yet. Track a video clip first, then select a text or overlay clip and attach it here.")
+            Hint("No tracked clips yet. Track a video clip first, then select a text, shape or overlay clip and attach it here.")
         } else {
             val f = clip.follow
             ChoiceChips(listOf<String?>(null) + trackers.map { it.id }, f?.clipId, { id -> if (id == null) "None" else "Follow " + trackers.first { it.id == id }.name.take(18) }) { id ->
@@ -531,6 +540,82 @@ internal fun TrackPanel(c: EditorController) {
                 Hint("Attached at the current playhead — the layer keeps its offset from the tracked point.")
             }
         }
+    }
+}
+
+@Composable
+internal fun StabilizePanel(c: EditorController) {
+    val clip = visualSelected(c)?.takeIf { c.project?.asset(it.assetId)?.type == MediaType.VIDEO }
+        ?: return NeedClip("Select a video clip to stabilize.")
+    var mode by remember(clip.id) { mutableStateOf(clip.stab?.mode ?: StabMode.ADVANCED) }
+    var smooth by remember(clip.id) { mutableFloatStateOf(clip.stab?.smoothness ?: 0.6f) }
+    var auto by remember(clip.id) { mutableStateOf(true) }
+    var zoom by remember(clip.id) { mutableFloatStateOf(clip.stab?.zoom ?: 1.08f) }
+    Column {
+        ChoiceChips(StabMode.entries.toList(), mode, {
+            when (it) { StabMode.BASIC -> "Position"; StabMode.ADVANCED -> "Position + rotation + zoom"; StabMode.LOCK -> "Lock (tripod)" }
+        }) { mode = it }
+        Hint(when (mode) {
+            StabMode.BASIC -> "Removes up/down/left/right shake, keeps rotation."
+            StabMode.ADVANCED -> "Removes shake, roll and zoom wobble. Moving people/cars are ignored; only the camera's own motion is corrected."
+            StabMode.LOCK -> "Holds the frame completely still, like a tripod. Best for shots meant to be static."
+        })
+        if (mode != StabMode.LOCK) LabeledSlider("Strength", smooth, 0f..1f, "${(smooth * 100).toInt()}%") { smooth = it }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ToggleChip(if (auto) "Auto zoom ✓" else "Auto zoom", auto) { auto = !auto }
+        }
+        if (!auto) LabeledSlider("Zoom", zoom, 1f..1.6f, "${"%.2f".format(zoom)}×") { zoom = it }
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            PanelAction(Icons.Outlined.PlayArrow, if (clip.stab == null) "Stabilize" else "Analyze again") { c.stabilize(mode, smooth, if (auto) 0f else zoom) }
+            clip.stab?.let { st ->
+                PanelAction(if (st.enabled) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, if (st.enabled) "Before" else "After") {
+                    c.updateSelected("Stabilization") { it.copy(stab = it.stab?.copy(enabled = !st.enabled)) }
+                }
+                if (!auto) PanelAction(Icons.Outlined.ZoomOutMap, "Set zoom") { c.updateSelected("Stabilize zoom") { it.copy(stab = it.stab?.copy(zoom = zoom)) } }
+                PanelAction(Icons.Outlined.DeleteOutline, "Remove") { c.updateSelected("Remove stabilization") { it.copy(stab = null) } }
+            }
+        }
+        clip.stab?.let { Hint("Stabilized ${it.samples.size} frames · ${it.mode.name.lowercase()} · zoom ${"%.2f".format(it.zoom)}×") }
+    }
+}
+
+@Composable
+internal fun TransitionPanel(c: EditorController) {
+    val p = c.project ?: return
+    val target = c.transitionTarget() ?: return NeedClip("Put two clips next to each other on a track, then pick a transition for the cut between them.")
+    val tr = target.transIn
+    val prev = p.trackOfClip(target.id)?.clips?.firstOrNull { it.id != target.id && kotlin.math.abs(it.endUs - target.startUs) <= 1_000 }
+    var group by remember { mutableStateOf(com.amiri.cut.core.effects.TransitionCatalog.spec(tr?.type ?: "")?.group ?: "Dissolve") }
+    Column {
+        Text(
+            (if (prev != null) "Cut ${prev.name.take(14)} → ${target.name.take(14)}" else "Start of ${target.name.take(18)} (fades in)") +
+                " · ${FrameTime.timecode(target.startUs, p.settings.fps)}",
+            color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp),
+        )
+        ChoiceChips(com.amiri.cut.core.effects.TransitionCatalog.GROUPS, group, { it }) { group = it }
+        Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp)) {
+            com.amiri.cut.core.effects.TransitionCatalog.ALL.filter { it.group == group }.forEach { sp ->
+                ToggleChip(sp.label, tr?.type == sp.id) {
+                    c.setTransition(target.id, (tr ?: com.amiri.cut.core.model.Transition(sp.id)).copy(type = sp.id), "Transition: ${sp.label}")
+                    c.previewTransition(target.id)
+                }
+            }
+        }
+        if (tr == null) { Hint("20 cinematic transitions. Pick one; it is centred on the cut and plays automatically so you can see it."); return@Column }
+        val spec = com.amiri.cut.core.effects.TransitionCatalog.spec(tr.type)
+        var dur by remember(target.id, tr.durationUs) { mutableFloatStateOf(tr.durationUs / 1_000_000f) }
+        LabeledSlider("Duration", dur, 0.1f..3f, "${"%.1f".format(dur)} s") { dur = it; c.setTransition(target.id, tr.copy(durationUs = (it * 1_000_000).toLong()), "Transition duration") }
+        if (spec?.directional == true) ChoiceChips(listOf(0, 1, 2, 3), tr.dir, { com.amiri.cut.core.effects.TransitionCatalog.DIRS[it] }) { d -> c.setTransition(target.id, tr.copy(dir = d), "Transition direction") }
+        if (spec?.soft == true) {
+            var soft by remember(target.id, tr.softness) { mutableFloatStateOf(tr.softness) }
+            LabeledSlider("Softness", soft, 0f..1f, "${(soft * 100).toInt()}%") { soft = it; c.setTransition(target.id, tr.copy(softness = it), "Transition softness") }
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            PanelAction(Icons.Outlined.PlayArrow, "Preview") { c.previewTransition(target.id) }
+            PanelAction(Icons.Outlined.Layers, "Apply to all cuts") { c.setTransitionAllCuts(target.id) }
+            PanelAction(Icons.Outlined.DeleteOutline, "Remove") { c.setTransition(target.id, null) }
+        }
+        Hint("Move the playhead near another cut to edit that one. The outgoing clip continues past the cut (its extra footage, or its last frame).")
     }
 }
 
@@ -605,7 +690,7 @@ internal fun ColorPanel(c: EditorController) {
             ToggleChip(if (c.colorBefore) "Showing BEFORE" else "Before / After", c.colorBefore) { c.colorBefore = !c.colorBefore }
             ToggleChip("Scopes", c.showScopes) { c.showScopes = !c.showScopes }
         }
-        ChoiceChips(listOf("Basic", "HSL", "Curves", "Wheels", "Detail", "LUT"), tab, { it }, Modifier.padding(top = 8.dp)) { tab = it }
+        ChoiceChips(listOf("Looks", "Basic", "HSL", "Curves", "Wheels", "Detail", "LUT"), tab, { it }, Modifier.padding(top = 8.dp)) { tab = it }
         if (tab == "LUT") {
             val luts = remember(c.historyVersion) { c.app.luts.list() }
             val lutFx = clip.effects.firstOrNull { it.type == "lut" }
@@ -628,9 +713,26 @@ internal fun ColorPanel(c: EditorController) {
         }
         val t = EditorController.PTarget.Fx(clip.id, fx.id)
         val spec = EffectCatalog.COLOR
+        if (tab == "Looks") {
+            val cur = fx.opts["look"]
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                ToggleChip("None", cur == null) { c.updateEffect(fx.id, "Look: none") { it.copy(opts = it.opts - "look") } }
+                com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) ->
+                    ToggleChip(name, cur == name) { c.updateEffect(fx.id, "Look: $name") { it.copy(opts = it.opts + ("look" to name)) } }
+                }
+            }
+            if (cur != null) {
+                ParamRow(c, t, spec.param("lookAmt")!!)
+                Hint("“$cur” is added on top of your own adjustments — fine-tune it in Basic, Wheels and HSL. Intensity can be keyframed.")
+            } else Hint("Ready-made cinematic looks (Light Nostalgic, Teal & Orange, Golden Hour…). Pick one, then set its intensity.")
+            return@Column
+        }
         KeyframeBar(c, clip)
         when (tab) {
-            "Basic" -> spec.params.take(10).forEach { ParamRow(c, t, it) }
+            "Basic" -> {
+                spec.params.take(10).forEach { ParamRow(c, t, it) }
+                listOf("vibrance", "fade", "clarity", "dehaze").forEach { ParamRow(c, t, spec.param(it)!!) }
+            }
             "HSL" -> {
                 var range by remember { mutableStateOf("red") }
                 val hues = mapOf("red" to Color(0xFFFF4D4D), "yellow" to Color(0xFFFFD54D), "green" to Color(0xFF5CD65C), "cyan" to Color(0xFF4DE1E1), "blue" to Color(0xFF4D7CFF), "magenta" to Color(0xFFE14DE1))
@@ -673,6 +775,8 @@ internal fun ColorPanel(c: EditorController) {
                         }
                     }
                 }
+                SectionTitle("Split toning")
+                listOf("sh_hue", "sh_sat", "hi_hue", "hi_sat", "split_bal").forEach { ParamRow(c, t, spec.param(it)!!) }
             }
             "Detail" -> listOf("vignette", "vig_feather", "sharpen", "blur").forEach { ParamRow(c, t, spec.param(it)!!) }
         }
