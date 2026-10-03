@@ -92,7 +92,9 @@ fun ExportSheet(c: EditorController, onDismiss: () -> Unit) {
             Text("${FrameTime.timecode(p.durationUs, p.settings.fps)} · MP4 · AAC audio", color = Amiri.TextSecondary, fontSize = 12.sp)
 
             Label("Presets")
-            ChoiceChips(PRESETS, null as ExportPreset?, { it.label }) { pr ->
+            var preset by remember { mutableStateOf(PRESETS[0]) }
+            ChoiceChips(PRESETS, preset, { it.label }) { pr ->
+                preset = pr
                 short = pr.shortSide ?: projShort; fps = pr.fps ?: p.settings.fps; quality = pr.quality; codec = pr.codec
             }
             Label("Resolution")
