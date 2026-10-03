@@ -2,9 +2,8 @@
 
 A native, **100 % offline**, device-powered video editor for Android — built for the realme GT3 (Android 16), minimal and professional: *Less features — more control.*
 
-> **Status: Stage 1 of 14** — Project + Media Import + Preview + Timeline.
-> Everything listed under *Working now* is real and functional. Everything else is
-> marked honestly in the app ("arrives in Stage N") — there are no fake controls.
+> **Status: 0.3.0 — every tool is implemented.** Preview and export share one GPU
+> compositor, so what you see is what you export.
 
 ---
 
@@ -17,40 +16,24 @@ A native, **100 % offline**, device-powered video editor for Android — built f
 
 ---
 
-## Working now (Stage 1)
+## Features
 
-| Area | What works |
+| Tool | What it does |
 |---|---|
-| **Home** | New / Open (restore backup) / Recent projects with cover, resolution, fps, aspect, last-edited. Swipe → rename, swipe ← delete. Long-press → rename, duplicate, backup to file, delete. |
-| **New project** | 720p / 1080p / 1440p / 4K · 9:16, 16:9, 1:1, 4:5, 4:3, 21:9, custom · 24/25/30/50/60 fps · black or transparent canvas · create & import media in one step. |
-| **Media** | Import video, photo, audio via the Storage Access Framework (persisted read permission, files read in place, never copied or uploaded). Media bin, add at playhead, **Replace Media**, **Relink Missing Media**, remove unused. |
-| **Preview** | Hardware-decoded (MediaCodec via Media3 ExoPlayer) playback of the composed timeline: top-most visible visual track, stills, all audio tracks mixed. Frame-exact paused scrubbing. Gaps render as canvas background. |
-| **Timeline** | Text, Overlay, V1–V4, A1–A3 tracks + add more. Fixed center playhead, pinch zoom (down to single frames), drag/fling scrub, two-finger navigation, double-tap fit, ruler tap-to-seek, long-press ruler → marker. Real **filmstrip thumbnails** and **real audio waveforms** (MediaCodec-decoded PCM). |
-| **Editing** | Select, **long-press & drag to move** (across tracks, with overlap protection), **trim** handles, **split** (selected clip or all tracks), delete, **ripple delete**, duplicate, clip lock, track lock / hide / mute, markers, prev/next edit, frame-by-frame stepping. **Snapping** to playhead, clip edges and markers with haptic tick. |
-| **History** | Snapshot Undo/Redo, 100 steps, per project. |
-| **Safety** | Autosave (1.5 s after each change + every 10 s), crash detection with **Recover Project** prompt, atomic file writes, project **Backup / Restore** (`.amiricut`). |
-| **Guides** | Grid (thirds), center, action safe, title safe, Reels/Shorts/TikTok/YouTube UI zones. |
-| **Settings** | Accent colour, Performance mode (Battery Saver → Maximum), snapping, haptics, **Cache Manager** (preview / proxy / render caches: size + clear), verified "no network access" indicator. |
-| **Layout** | Portrait and landscape layouts; no activity restart on rotation. |
-
-## Roadmap (honest)
-
-| Stage | Scope | State |
-|---|---|---|
-| 1 | Project + Media Import + Preview + Timeline | ✅ this build |
-| 2 | Cut / Trim polish, Transform (crop, rotate, flip, scale, position, anchor, opacity, blend), speed, reverse, freeze | ⏳ |
-| 3 | Keyframe engine (linear, ease, bezier, custom curves) | ⏳ |
-| 4 | Text engine + font manager (TTF/OTF, Persian/Arabic RTL) | ⏳ |
-| 5 | Masks (rect, ellipse, pen; feather, expansion, invert) | ⏳ |
-| 6 | Color (basic, HSL, curves, wheels, .CUBE LUT) + scopes + before/after | ⏳ |
-| 7 | GPU effects (glow, light sweep, rays, leaks, film, blur, motion blur, chroma key), effect stack, adjustment layers | ⏳ |
-| 8 | Motion tracking | ⏳ |
-| 9 | Rotoscoping | ⏳ |
-| 10 | Audio tools | ⏳ |
-| 11 | Export (Transformer, encoder capability check, render queue, background export) | ⏳ |
-| 12–14 | Optimisation, crash testing, UI polish | ⏳ |
-
----
+| **Timeline** | Multi-track (Text, Overlay, V1–V4, A1–A3, +more), frame-exact edits, snapping, markers, trim/move/split/ripple/duplicate, lock/hide/mute, keyframe diamonds (drag to retime). |
+| **Compositor** | All visible layers rendered together on the GPU (OpenGL ES): videos (4 hardware decoders at once), photos, text, adjustment layers; blend modes Normal/Screen/Add/Multiply/Overlay/Soft/Hard Light/Darken/Lighten. |
+| **Keyframes** | Every slider is keyframable (◇). Linear, Ease In/Out/In-Out, Hold and custom Bezier curves; keyframes move with the clip and survive split/trim. |
+| **Transform** | Position, scale, rotation, anchor, opacity, crop, flip, fit/fill, on-screen drag/pinch/twist gizmo, transform motion blur (amount + shutter angle). |
+| **Speed** | 0.25×–4× + custom, speed ramps (Montage/Smooth/Fast/Slow/custom curve), reverse (on-device reversed copy), freeze frame. |
+| **Mask** | Rectangle, ellipse, pen (polygon) masks; feather, expansion, opacity, invert, add/subtract/intersect, keyframes, follow motion track. |
+| **Track** | On-device motion tracking (1 point = position, 2 points = + scale & rotation); attach text/overlays to a track; Stabilizer Basic/Advanced. |
+| **Roto** | Roto brush add/subtract, lasso fill/cut, feather, refine edge, motion-tracked propagation, per-frame corrections. |
+| **Text** | Persian/Arabic/English with RTL, bundled Vazirmatn + system fonts + TTF/OTF import; size, color, tracking, line height, stroke, shadow, glow, background box — all keyframable. |
+| **Color** | Exposure…tint, HSL (6 ranges), RGB curves, lift/gamma/gain wheels, vignette, sharpen, blur, .CUBE LUT import with strength, Before/After, scopes (histogram, waveform, vectorscope). |
+| **Effects** | Glow, Light Sweep, Light Rays, Light Leak (8 presets), Film (grain, dust, scratch, flicker, vignette, halation, fade, chromatic aberration, blur; 6 presets), Gaussian/Directional/Zoom blur, Chromatic aberration, Wave, Lens bulge, Chroma key (with eyedropper), Sharpen, Posterize, Mosaic, Vignette. Ordered effect stack with bypass; adjustment layers. |
+| **Audio** | Real waveforms, keyframable volume (0–200 %), fade in/out, mute; full mixdown in export. |
+| **Export** | MP4 (H.264/HEVC + AAC), 720p–4K, 24–60 fps, quality presets or custom bitrate, encoder capability check with suggested alternative, background render queue with progress/fps/ETA/cancel. |
+| **Project** | Non-destructive JSON projects, autosave + crash recovery, backup/restore, relink/replace media, proxies, preview quality, cache manager. |
 
 ## How to Build
 
