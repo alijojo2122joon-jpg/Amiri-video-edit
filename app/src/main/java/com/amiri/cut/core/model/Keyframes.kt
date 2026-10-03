@@ -23,7 +23,7 @@ enum class Interp(val label: String) {
 data class Key(
     val t: Long,
     val v: Float,
-    val interp: Interp = Interp.EASE_IN_OUT,
+    val interp: Interp = Interp.LINEAR,
     val c1x: Float = 0.42f,
     val c1y: Float = 0f,
     val c2x: Float = 0.58f,
@@ -45,7 +45,7 @@ data class Param(val v: Float, val keys: List<Key> = emptyList()) {
 
     fun withKey(t: Long, value: Float, tolerance: Long, interp: Interp? = null): Param {
         val existing = keys.firstOrNull { abs(it.t - t) <= tolerance }
-        val k = existing?.copy(v = value, interp = interp ?: existing.interp) ?: Key(t, value, interp ?: Interp.EASE_IN_OUT)
+        val k = existing?.copy(v = value, interp = interp ?: existing.interp) ?: Key(t, value, interp ?: Interp.LINEAR)
         return copy(keys = (keys.filterNot { it === existing } + k).sortedBy { it.t })
     }
 

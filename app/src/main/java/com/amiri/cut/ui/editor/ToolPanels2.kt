@@ -28,6 +28,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Draw
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.CenterFocusStrong
@@ -826,16 +832,36 @@ internal fun EffectsPanel(c: EditorController) {
 
 @Composable
 internal fun AudioPanel(c: EditorController) {
-    val clip = c.selectedClip()?.takeIf { cl -> c.project?.asset(cl.assetId)?.hasAudio == true }
-        ?: return NeedClip("Select a clip with sound (an audio clip, or a video with audio).")
-    val t = EditorController.PTarget.Audio(clip.id)
+    var preferName by remember { mutableStateOf("SFX") }
+    // Audio files and videos (e.g. clips saved from Instagram) — only their sound is used.
+    val soundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) c.importSound(uri, preferName)
+    }
+    val types = arrayOf("audio/*", "video/*")
     Column {
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            PanelAction(Icons.Outlined.GraphicEq, "+ Sound effect") { preferName = "SFX"; soundPicker.launch(types) }
+            PanelAction(Icons.Outlined.LibraryMusic, "+ Music") { preferName = "Music"; soundPicker.launch(types) }
+            PanelAction(Icons.Outlined.Mic, "+ Voice") { preferName = "Voice"; soundPicker.launch(types) }
+            val sel = c.selectedClip()
+            val selTrack = sel?.let { c.project?.trackOfClip(it.id) }
+            if (sel != null && selTrack?.acceptsVisual == true && c.project?.asset(sel.assetId)?.hasAudio == true && !sel.muted) {
+                PanelAction(Icons.Outlined.LinkOff, "Detach audio") { c.detachAudio(sel.id) }
+            }
+            if (sel != null) PanelAction(Icons.Outlined.DeleteOutline, "Delete clip") { c.deleteSelected() }
+        }
+        val clip = c.selectedClip()?.takeIf { cl -> c.project?.asset(cl.assetId)?.hasAudio == true }
+        if (clip == null) {
+            Hint("Sound effects go on their own SFX tracks under the music, at the playhead. You can pick audio files or videos (only the sound is used). Select a clip with sound to set volume, fades, pan and EQ.")
+            return@Column
+        }
+        val t = EditorController.PTarget.Audio(clip.id)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ToggleChip(if (clip.muted) "Muted" else "Mute", clip.muted) { c.updateSelected("Mute") { it.copy(muted = !it.muted) } }
         }
         KeyframeBar(c, clip)
         AudioSpec.PARAMS.forEach { ParamRow(c, t, it) }
-        Hint("Volume can be keyframed. Up to 100% is heard in preview; boosts above 100% are applied in export. Speed is in the Speed tool.")
+        Hint("All of these can be keyframed and sound the same in preview and export. Up to 100% volume is heard in preview; boosts above 100% are applied in export.")
     }
 }
 
@@ -844,27 +870,56 @@ internal fun AudioPanel(c: EditorController) {
 @Composable
 internal fun ShapePanel(c: EditorController) {
     val clip = c.selectedClip()?.takeIf { it.kind == ClipKind.SHAPE }
+    val PATH = com.amiri.cut.core.model.ShapeKind.PATH
     Column {
+        if (c.shapePen) {
+            val n = c.penPoints.size / 6
+            Text(
+                if (c.penFreehand) "Freehand: draw the line with one finger. Two fingers zoom/pan."
+                else "Pen: tap = corner point · tap & drag = curve · tap the yellow first point to close. Two fingers zoom/pan.",
+                color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                ToggleChip("Freehand", c.penFreehand) { c.penFreehand = !c.penFreehand; c.penPoints.clear() }
+                if (!c.penFreehand) {
+                    PanelAction(Icons.Outlined.Check, "Finish line ($n)") { c.finishPen(false) }
+                    PanelAction(Icons.Outlined.CropFree, "Close shape") { c.finishPen(true) }
+                    PanelAction(Icons.AutoMirrored.Outlined.Undo, "Undo point") { c.penUndo() }
+                }
+                PanelAction(Icons.Outlined.DeleteOutline, "Cancel") { c.cancelPen() }
+            }
+            return@Column
+        }
         Row(Modifier.horizontalScroll(rememberScrollState())) {
-            com.amiri.cut.core.model.ShapeKind.entries.forEach { k ->
+            PanelAction(Icons.Outlined.Draw, "+ Pen / line") { c.addShape(PATH) }
+            com.amiri.cut.core.model.ShapeKind.entries.filter { it != PATH }.forEach { k ->
                 PanelAction(
                     when (k) {
                         com.amiri.cut.core.model.ShapeKind.RECT -> Icons.Outlined.CropFree
                         com.amiri.cut.core.model.ShapeKind.ELLIPSE -> Icons.Outlined.GpsFixed
                         com.amiri.cut.core.model.ShapeKind.POLYGON -> Icons.Outlined.Layers
                         com.amiri.cut.core.model.ShapeKind.STAR -> Icons.Outlined.Add
-                        com.amiri.cut.core.model.ShapeKind.LINE -> Icons.Outlined.Flip
+                        else -> Icons.Outlined.Flip
                     },
                     "+ " + k.label,
                 ) { c.addShape(k) }
             }
         }
-        if (clip == null) { Hint("Add a shape layer, or select one on the timeline. Move, scale, rotate and animate it with Transform and Keyframes."); return@Column }
+        if (clip == null) { Hint("Add a shape or draw a line / shape with the pen (stroke or fill, like After Effects shape layers). Select a shape layer to edit it; animate it with keyframes, Trim paths or the Saber effect."); return@Column }
         val spec = clip.shape ?: return@Column
-        ChoiceChips(com.amiri.cut.core.model.ShapeKind.entries.toList(), spec.kind, { it.label }) { c.setShapeKind(it) }
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            if (spec.kind == PATH) {
+                ToggleChip("Edit points", c.pathEdit) { c.pathEdit = !c.pathEdit }
+                ToggleChip("Closed (fill)", spec.closed) { c.setPathClosed(!spec.closed) }
+                ToggleChip("Round ends", spec.roundCaps) { c.setPathRoundCaps(!spec.roundCaps) }
+            }
+            PanelAction(Icons.Outlined.DeleteOutline, "Delete layer") { c.deleteSelected() }
+        }
+        if (spec.kind != PATH) ChoiceChips(com.amiri.cut.core.model.ShapeKind.entries.filter { it != PATH }, spec.kind, { it.label }) { c.setShapeKind(it) }
         KeyframeBar(c, clip)
         val t = EditorController.PTarget.Shape(clip.id)
-        com.amiri.cut.core.effects.ShapeSpecDefaults.PARAMS.forEach { ParamRow(c, t, it) }
+        val skip = if (spec.kind == PATH) setOf("w", "h", "radius", "sides", "inner") else emptySet()
+        com.amiri.cut.core.effects.ShapeSpecDefaults.PARAMS.filter { it.id !in skip }.forEach { ParamRow(c, t, it) }
         com.amiri.cut.core.effects.ShapeSpecDefaults.COLORS.forEach { (pre, label, def) -> ColorRow(c, t, Triple("${pre}r", "${pre}g", "${pre}b"), label, def) }
     }
 }

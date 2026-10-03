@@ -133,14 +133,27 @@ data class TextSpec(
 )
 
 @Serializable
-enum class ShapeKind(val label: String) { RECT("Rectangle"), ELLIPSE("Ellipse"), POLYGON("Polygon"), STAR("Star"), LINE("Line") }
+enum class ShapeKind(val label: String) { RECT("Rectangle"), ELLIPSE("Ellipse"), POLYGON("Polygon"), STAR("Star"), LINE("Line"), PATH("Pen path") }
 
-/** Vector shape layer. Animatable values in [props] (see ShapeSpecDefaults). */
+/**
+ * Vector shape layer. Animatable values in [props] (see ShapeSpecDefaults).
+ * PATH shapes use [path]: per vertex 6 floats (x, y, inX, inY, outX, outY) where x/y are
+ * normalised canvas coordinates (0..1, y down) and the in/out bezier handles are offsets
+ * from the vertex. The layer of a PATH shape is canvas-sized.
+ */
 @Serializable
 data class ShapeSpec(
     val kind: ShapeKind = ShapeKind.RECT,
     val props: Props = Props(),
-)
+    val path: List<Float> = emptyList(),
+    val closed: Boolean = false,
+    val roundCaps: Boolean = true,
+) {
+    val vertexCount: Int get() = path.size / 6
+}
+
+/** How a keyframe is drawn on the timeline: ease on its incoming / outgoing side, or hold. */
+data class KeyMark(val t: Long, val easeIn: Boolean, val easeOut: Boolean, val hold: Boolean)
 
 /** Speed ramp: relative speed shape across the clip (duration is preserved). */
 @Serializable
@@ -302,6 +315,34 @@ data class Clip(
         shape = shape?.let { it.copy(props = it.props.shift(dt)) },
         audio = audio.shift(dt),
     )
+
+    private fun allParams(): List<Param> = transform.p.values + effects.flatMap { it.props.p.values } +
+        masks.flatMap { it.props.p.values } + (text?.props?.p?.values ?: emptyList()) +
+        (shape?.props?.p?.values ?: emptyList()) + audio.p.values
+
+    /**
+     * Keyframe marks for the timeline, merged across every animated parameter (keys within
+     * [tolerance] of each other are one mark). A side is "eased" when its segment uses any
+     * curve other than linear; hold wins over everything on the outgoing side.
+     */
+    fun keyMarks(tolerance: Long = 1000): List<KeyMark> {
+        data class Acc(var t: Long, var easeIn: Boolean, var easeOut: Boolean, var hold: Boolean)
+        val out = ArrayList<Acc>()
+        for (prm in allParams()) {
+            val ks = prm.keys
+            for (i in ks.indices) {
+                val k = ks[i]
+                val prev = if (i > 0) ks[i - 1] else null
+                val inE = prev != null && prev.interp != Interp.LINEAR && prev.interp != Interp.HOLD
+                val outE = i < ks.size - 1 && k.interp != Interp.LINEAR && k.interp != Interp.HOLD
+                val hold = k.interp == Interp.HOLD
+                val a = out.firstOrNull { kotlin.math.abs(it.t - k.t) <= tolerance }
+                if (a == null) out += Acc(k.t, inE, outE, hold)
+                else { a.easeIn = a.easeIn || inE; a.easeOut = a.easeOut || outE; a.hold = a.hold || hold }
+            }
+        }
+        return out.sortedBy { it.t }.map { KeyMark(it.t, it.easeIn, it.easeOut, it.hold) }
+    }
 
     /** All keyframe times (clip-local) for timeline display. */
     fun keyTimes(): List<Long> = (transform.keyTimes() + effects.flatMap { it.props.keyTimes() } +

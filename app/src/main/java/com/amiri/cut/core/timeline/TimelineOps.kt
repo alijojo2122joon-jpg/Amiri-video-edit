@@ -46,7 +46,9 @@ object TimelineOps {
 
     fun compatible(track: Track, asset: MediaAsset): Boolean = when (asset.type) {
         MediaType.AUDIO -> track.kind == TrackKind.AUDIO
-        MediaType.VIDEO, MediaType.IMAGE -> track.kind == TrackKind.VIDEO || track.kind == TrackKind.OVERLAY
+        MediaType.VIDEO -> track.kind == TrackKind.VIDEO || track.kind == TrackKind.OVERLAY ||
+            (track.kind == TrackKind.AUDIO && asset.hasAudio)
+        MediaType.IMAGE -> track.kind == TrackKind.VIDEO || track.kind == TrackKind.OVERLAY
     }
 
     private fun frame(fps: Int): Long = FrameTime.fromFrame(1, fps).coerceAtLeast(1)
@@ -142,12 +144,14 @@ object TimelineOps {
     fun setTrackHidden(p: Project, trackId: String, hidden: Boolean) = p.mapTrack(trackId) { it.copy(hidden = hidden) }
     fun setTrackMuted(p: Project, trackId: String, muted: Boolean) = p.mapTrack(trackId) { it.copy(muted = muted) }
 
-    /** Removes an empty, user-added track. Default tracks can be removed too if empty. */
+    /**
+     * Removes a track together with its clips (undoable). Locked tracks stay, and the last
+     * main video track is kept so there is always somewhere to put footage.
+     */
     fun removeTrack(p: Project, trackId: String): Project? {
         val t = p.track(trackId) ?: return null
-        if (t.clips.isNotEmpty() || t.locked) return null
-        val sameKind = p.tracks.count { it.kind == t.kind }
-        if (sameKind <= 1) return null
+        if (t.locked) return null
+        if (t.kind == TrackKind.VIDEO && p.tracks.count { it.kind == TrackKind.VIDEO } <= 1) return null
         return p.copy(tracks = p.tracks.filterNot { it.id == trackId })
     }
 
@@ -393,6 +397,87 @@ object TimelineOps {
             ?: run { proj = addTrack(proj, TrackKind.OVERLAY); proj.tracks.last { it.kind == TrackKind.OVERLAY } }
         proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
         return proj to clip
+    }
+
+    /**
+     * Adds a pen-path shape layer. [points] are vertices (x, y, inX, inY, outX, outY) in
+     * normalised canvas coordinates. The anchor is put on the path's centre (with a matching
+     * position) so it rotates/scales around itself while staying exactly where it was drawn.
+     */
+    fun addPathShape(p: Project, atUs: Long, points: List<Float>, closed: Boolean, durationUs: Long = 5_000_000L): Pair<Project, Clip> {
+        val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
+        val n = points.size / 6
+        var minX = 1f; var maxX = 0f; var minY = 1f; var maxY = 0f
+        for (i in 0 until n) {
+            minX = minOf(minX, points[i * 6]); maxX = maxOf(maxX, points[i * 6])
+            minY = minOf(minY, points[i * 6 + 1]); maxY = maxOf(maxY, points[i * 6 + 1])
+        }
+        val cx = if (n > 0) (minX + maxX) / 2f else 0.5f
+        val cy = if (n > 0) (minY + maxY) / 2f else 0.5f
+        val props = com.amiri.cut.core.model.Props.of(
+            "strokeW" to 0.012f, "fillA" to if (closed) 1f else 0f,
+            "sr" to 1f, "sg" to 1f, "sb" to 1f,
+        )
+        val clip = Clip(
+            id = newId(), assetId = "", name = if (closed) "Pen shape" else "Pen line",
+            startUs = start, sourceInUs = 0, sourceOutUs = durationUs,
+            shape = com.amiri.cut.core.model.ShapeSpec(com.amiri.cut.core.model.ShapeKind.PATH, props, points, closed),
+            transform = com.amiri.cut.core.model.Props.of("ax" to cx, "ay" to cy, "px" to cx - 0.5f, "py" to cy - 0.5f),
+        )
+        var proj = p
+        val t = freeVisualTrack(proj, listOf(TrackKind.OVERLAY, TrackKind.TEXT), clip.startUs, clip.endUs)
+            ?: run { proj = addTrack(proj, TrackKind.OVERLAY); proj.tracks.last { it.kind == TrackKind.OVERLAY } }
+        proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
+        return proj to clip
+    }
+
+    /**
+     * Puts a sound (an audio file, or the sound of a video file) on an audio track at [atUs].
+     * Uses the first free track named "SFX…" (sound-effect tracks sit below music), else
+     * creates a new "SFX" track at the bottom.
+     */
+    fun placeSound(p: Project, asset: MediaAsset, atUs: Long, preferName: String = "SFX"): Pair<Project, Clip>? {
+        if (!asset.hasAudio && asset.type != MediaType.AUDIO) return null
+        val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
+        val clip = newClipFor(asset, start).let { if (asset.type == MediaType.IMAGE) return null else it }
+        var proj = addAsset(p, asset)
+        val target = proj.tracks.firstOrNull {
+            it.kind == TrackKind.AUDIO && !it.locked && it.name.startsWith(preferName) && isFree(it, clip.startUs, clip.endUs)
+        }
+        val trackId = target?.id ?: run {
+            val n = proj.tracks.count { it.kind == TrackKind.AUDIO && it.name.startsWith(preferName) } + 1
+            val t = Track(newId(), TrackKind.AUDIO, if (n == 1) preferName else "$preferName $n")
+            proj = proj.copy(tracks = proj.tracks + t)
+            t.id
+        }
+        proj = proj.mapTrack(trackId) { it.withClips(it.clips + clip) }
+        return proj to clip
+    }
+
+    /**
+     * Detach audio: mutes the video clip and puts its sound (same in/out, speed and audio
+     * settings) on a free audio track right below, so it can be edited separately.
+     */
+    fun detachAudio(p: Project, clipId: String): Pair<Project, Clip>? {
+        val track = p.trackOfClip(clipId) ?: return null
+        val clip = track.clips.first { it.id == clipId }
+        val asset = p.asset(clip.assetId) ?: return null
+        if (!track.acceptsVisual || !asset.hasAudio || clip.muted) return null
+        val sound = clip.copy(
+            id = newId(), name = clip.name + " (audio)",
+            transform = com.amiri.cut.core.model.Props(), effects = emptyList(), masks = emptyList(),
+            roto = null, tracking = null, follow = null, stab = null, blend = com.amiri.cut.core.model.BlendMode.NORMAL,
+            locked = false,
+        )
+        var proj = p
+        val target = proj.tracks.firstOrNull { it.kind == TrackKind.AUDIO && !it.locked && isFree(it, sound.startUs, sound.endUs) }
+        val trackId = target?.id ?: run {
+            proj = addTrack(proj, TrackKind.AUDIO)
+            proj.tracks.last { it.kind == TrackKind.AUDIO }.id
+        }
+        proj = proj.mapTrack(trackId) { it.withClips(it.clips + sound) }
+        proj = proj.mapTrack(track.id) { t -> t.copy(clips = t.clips.map { if (it.id == clipId) it.copy(muted = true) else it }) }
+        return proj to sound
     }
 
     /** Adds an adjustment layer (affects all layers below it) at [atUs]. */

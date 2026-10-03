@@ -166,6 +166,14 @@ class AudioMixer(private val context: Context, private val project: Project, pri
     }
 
     private val readers = HashMap<String, ClipAudioReader>()
+    private val fx = HashMap<String, com.amiri.cut.core.audio.AudioFxChain>()
+
+    private fun fxFor(c: Clip, t: Long): com.amiri.cut.core.audio.AudioFxChain {
+        val ch = fx.getOrPut(c.id) { com.amiri.cut.core.audio.AudioFxChain(rate.toDouble()) }
+        val l = t - c.startUs
+        ch.update(c.audio.at("bass", l, 0f), c.audio.at("mid", l, 0f), c.audio.at("treble", l, 0f), c.audio.at("pan", l, 0f))
+        return ch
+    }
     private val whole = HashMap<String, Pair<FloatArray, Int>?>()
 
     /** Full decode (for reversed playback). Returns interleaved stereo + sample rate. */
@@ -208,21 +216,30 @@ class AudioMixer(private val context: Context, private val project: Project, pri
                     if (t < c.startUs || t >= c.endUs) continue
                     val src = asset.durationUs - c.sourceTimeAt(t)
                     val k = (src * sr / 1_000_000L).toInt()
-                    if (k in 0 until n) { mix[i * 2] += data[k * 2]; mix[i * 2 + 1] += data[k * 2 + 1] }
+                    if (k in 0 until n) {
+                        val g = PreviewEngine.gainAt(s.track, c, t)
+                        tmp[0] = data[k * 2] * g; tmp[1] = data[k * 2 + 1] * g
+                        if (i % 256 == 0 || i == 0) fxFor(c, t)
+                        fx[c.id]?.takeIf { it.active }?.process(tmp)
+                        mix[i * 2] += tmp[0]; mix[i * 2 + 1] += tmp[1]
+                    }
                 }
                 continue
             }
             val r = readers.getOrPut(c.id) { ClipAudioReader(context, s.uri, c.sourceTimeAt(max(c.startUs, blockStartUs))) }
             if (!r.ok) continue
             var gain = 0f
+            var chain: com.amiri.cut.core.audio.AudioFxChain? = null
             for (i in 0 until frames) {
                 val t = (startFrame + i) * 1_000_000L / rate
                 if (t < c.startUs || t >= c.endUs) continue
-                if (i % 256 == 0 || gain == 0f) gain = PreviewEngine.gainAt(s.track, c, t)
-                if (gain <= 0f) continue
+                if (i % 256 == 0 || gain == 0f || chain == null) { gain = PreviewEngine.gainAt(s.track, c, t); chain = fxFor(c, t) }
                 r.sample(c.sourceTimeAt(t), tmp)
-                mix[i * 2] += tmp[0] * gain
-                mix[i * 2 + 1] += tmp[1] * gain
+                if (gain <= 0f) continue
+                tmp[0] *= gain; tmp[1] *= gain
+                if (chain.active) chain.process(tmp)
+                mix[i * 2] += tmp[0]
+                mix[i * 2 + 1] += tmp[1]
             }
         }
         for (i in 0 until frames * 2) {

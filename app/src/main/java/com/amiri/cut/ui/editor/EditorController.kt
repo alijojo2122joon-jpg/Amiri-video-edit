@@ -449,8 +449,12 @@ class EditorController(
 
     fun removeTrack(trackId: String) {
         val np = TimelineOps.removeTrack(project ?: return, trackId)
-        if (np == null) toast = Toast("Only empty, unlocked tracks can be removed")
-        else commit("Remove track", np)
+        if (np == null) toast = Toast("Locked tracks and the last video track can't be removed")
+        else {
+            if (project?.track(trackId)?.clips?.any { it.id == selectedClipId } == true) selectedClipId = null
+            commit("Remove track", np)
+            toast = Toast("Track removed · Undo to bring it back")
+        }
     }
 
     fun rename(name: String) {
@@ -1221,6 +1225,7 @@ class EditorController(
     // ═════════════════════════ Shapes ═════════════════════════
 
     fun addShape(kind: com.amiri.cut.core.model.ShapeKind) {
+        if (kind == com.amiri.cut.core.model.ShapeKind.PATH) { startPen(); return }
         var (np, clip) = TimelineOps.addShape(project ?: return, engine.position.value, kind)
         if (kind == com.amiri.cut.core.model.ShapeKind.LINE) {
             np = TimelineOps.updateClip(np, clip.id) { c ->
@@ -1233,6 +1238,184 @@ class EditorController(
 
     fun setShapeKind(kind: com.amiri.cut.core.model.ShapeKind) =
         updateSelected("Shape type") { c -> c.shape?.let { c.copy(shape = it.copy(kind = kind), name = kind.label) } ?: c }
+
+    // ═════════════════════════ Pen tool (path shapes) ═════════════════════════
+
+    /** Vertices being drawn (6 floats each: x, y, inX, inY, outX, outY; canvas-normalised). */
+    val penPoints = androidx.compose.runtime.mutableStateListOf<Float>()
+    var shapePen by mutableStateOf(false)
+    var penFreehand by mutableStateOf(false)
+    /** Edit the vertices of the selected pen path on the preview. */
+    var pathEdit by mutableStateOf(false)
+
+    fun startPen() {
+        engine.pause()
+        penPoints.clear()
+        shapePen = true
+        pathEdit = false
+        toast = Toast(if (penFreehand) "Draw with your finger" else "Tap to add points · drag to curve · tap the first point to close")
+    }
+
+    fun cancelPen() { shapePen = false; penPoints.clear() }
+
+    fun penUndo() { repeat(6) { if (penPoints.isNotEmpty()) penPoints.removeAt(penPoints.lastIndex) } }
+
+    fun finishPen(closed: Boolean) {
+        val n = penPoints.size / 6
+        if (n < 2) { toast = Toast("Add at least 2 points"); return }
+        val p = project ?: return
+        val (np, clip) = TimelineOps.addPathShape(p, engine.position.value, penPoints.toList(), closed && n >= 3)
+        commit(if (closed) "Pen shape" else "Pen line", np)
+        selectedClipId = clip.id
+        shapePen = false
+        penPoints.clear()
+    }
+
+    /** Moves vertex [index] of a pen path ([part] 0 = point, 1 = in handle, 2 = out handle). */
+    fun movePathPoint(clipId: String, index: Int, part: Int, x: Float, y: Float) {
+        val p = project ?: return
+        liveEdit(TimelineOps.updateClip(p, clipId) { c ->
+            val sp = c.shape ?: return@updateClip c
+            if (index < 0 || index >= sp.vertexCount) return@updateClip c
+            val pts = sp.path.toMutableList()
+            val b = index * 6
+            when (part) {
+                0 -> { pts[b] = x; pts[b + 1] = y }
+                1 -> { pts[b + 2] = x - pts[b]; pts[b + 3] = y - pts[b + 1]; pts[b + 4] = -pts[b + 2]; pts[b + 5] = -pts[b + 3] }
+                else -> { pts[b + 4] = x - pts[b]; pts[b + 5] = y - pts[b + 1]; pts[b + 2] = -pts[b + 4]; pts[b + 3] = -pts[b + 5] }
+            }
+            c.copy(shape = sp.copy(path = pts))
+        })
+    }
+
+    fun setPathClosed(closed: Boolean) = updateSelected(if (closed) "Close path" else "Open path") { c ->
+        c.shape?.let { sp -> c.copy(shape = sp.copy(closed = closed)) } ?: c
+    }
+
+    fun setPathRoundCaps(round: Boolean) = updateSelected("Line caps") { c -> c.shape?.let { c.copy(shape = it.copy(roundCaps = round)) } ?: c }
+
+    // ═════════════════════════ Sound ═════════════════════════
+
+    /** Imports a sound effect (audio file, or a video's sound — e.g. a downloaded clip) at the playhead. */
+    fun importSound(uri: Uri, preferName: String = "SFX") {
+        scope.launch {
+            MediaProbe.persistPermission(app.contentResolver, uri)
+            val a = MediaProbe.probe(app, uri)
+            if (a == null) { toast = Toast("Couldn't read that file"); return@launch }
+            if (!a.hasAudio) { toast = Toast("That file has no sound"); return@launch }
+            val p = project ?: return@launch
+            val r = TimelineOps.placeSound(p, a, engine.position.value, preferName)
+            if (r == null) { toast = Toast("Couldn't place that sound"); return@launch }
+            commit("Add sound ${a.name}", r.first)
+            requestCaches(a)
+            selectedClipId = r.second.id
+            toast = Toast("Added on ${r.first.trackOfClip(r.second.id)?.name}")
+        }
+    }
+
+    fun detachAudio(clipId: String? = selectedClipId) {
+        val p = project ?: return
+        val id = clipId ?: run { toast = Toast("Select a video first"); return }
+        val r = TimelineOps.detachAudio(p, id)
+        if (r == null) { toast = Toast("This clip has no (unmuted) sound to detach"); return }
+        commit("Detach audio", r.first)
+        selectedClipId = r.second.id
+        toast = Toast("Audio detached to ${r.first.trackOfClip(r.second.id)?.name}")
+    }
+
+    // ═════════════════════════ Keyframe interpolation (all params) ═════════════════════════
+
+    private fun mapKeysAt(clipId: String, local: Long, label: String, f: (com.amiri.cut.core.model.Param, com.amiri.cut.core.model.Key) -> com.amiri.cut.core.model.Param) {
+        val p = project ?: return
+        val tol = keyTolerance()
+        fun mv(pr: com.amiri.cut.core.model.Props) = com.amiri.cut.core.model.Props(pr.p.mapValues { (_, prm) ->
+            val k = prm.keyNear(local, tol)
+            if (k == null) prm else f(prm, k)
+        })
+        commit(label, TimelineOps.updateClip(p, clipId) { c ->
+            c.copy(
+                transform = mv(c.transform), audio = mv(c.audio),
+                effects = c.effects.map { it.copy(props = mv(it.props)) },
+                masks = c.masks.map { it.copy(props = mv(it.props)) },
+                text = c.text?.let { it.copy(props = mv(it.props)) },
+                shape = c.shape?.let { it.copy(props = mv(it.props)) },
+            )
+        })
+    }
+
+    /** Easy Ease / Linear / Hold for every key of the clip at [local] (clip-local time). */
+    fun setInterpAllAt(clipId: String, local: Long, interp: com.amiri.cut.core.model.Interp) =
+        mapKeysAt(clipId, local, "Keyframe: ${interp.label}") { prm, k ->
+            prm.copy(keys = prm.keys.map { if (it === k) it.copy(interp = interp) else it })
+        }
+
+    /** Easy Ease (both sides): also eases the segment arriving at this key. */
+    fun easyEaseAt(clipId: String, local: Long) =
+        mapKeysAt(clipId, local, "Easy Ease") { prm, k ->
+            val i = prm.keys.indexOf(k)
+            prm.copy(keys = prm.keys.mapIndexed { j, it ->
+                when {
+                    j == i -> it.copy(interp = com.amiri.cut.core.model.Interp.EASE_IN_OUT)
+                    j == i - 1 && it.interp == com.amiri.cut.core.model.Interp.LINEAR -> it.copy(interp = com.amiri.cut.core.model.Interp.EASE_IN_OUT)
+                    else -> it
+                }
+            })
+        }
+
+    fun deleteKeysAt(clipId: String, local: Long) =
+        mapKeysAt(clipId, local, "Delete keyframes") { prm, _ -> prm.withoutKeyNear(local, keyTolerance()) }
+
+    /** Keyframe menu target (clip id, clip-local time) opened by long-press on the timeline. */
+    var keyMenu by mutableStateOf<Pair<String, Long>?>(null)
+
+    /** Ease the arrival at this key (the segment coming in slows down). */
+    fun easeArriveAt(clipId: String, local: Long) {
+        val p = project ?: return
+        val tol = keyTolerance()
+        fun mv(pr: com.amiri.cut.core.model.Props) = com.amiri.cut.core.model.Props(pr.p.mapValues { (_, prm) ->
+            val k = prm.keyNear(local, tol) ?: return@mapValues prm
+            val i = prm.keys.indexOf(k)
+            if (i <= 0) prm else prm.copy(keys = prm.keys.mapIndexed { j, it ->
+                if (j == i - 1) it.copy(interp = if (it.interp == com.amiri.cut.core.model.Interp.EASE_IN) com.amiri.cut.core.model.Interp.EASE_IN_OUT else com.amiri.cut.core.model.Interp.EASE_OUT) else it
+            })
+        })
+        commit("Ease in", TimelineOps.updateClip(p, clipId) { c ->
+            c.copy(
+                transform = mv(c.transform), audio = mv(c.audio),
+                effects = c.effects.map { it.copy(props = mv(it.props)) },
+                masks = c.masks.map { it.copy(props = mv(it.props)) },
+                text = c.text?.let { it.copy(props = mv(it.props)) },
+                shape = c.shape?.let { it.copy(props = mv(it.props)) },
+            )
+        })
+    }
+
+    /** Ease the departure from this key (the segment going out starts slowly). */
+    fun easeLeaveAt(clipId: String, local: Long) = mapKeysAt(clipId, local, "Ease out") { prm, k ->
+        prm.copy(keys = prm.keys.map {
+            if (it === k) it.copy(interp = if (it.interp == com.amiri.cut.core.model.Interp.EASE_OUT) com.amiri.cut.core.model.Interp.EASE_IN_OUT else com.amiri.cut.core.model.Interp.EASE_IN) else it
+        })
+    }
+
+    /** Makes both sides linear (also the incoming segment). */
+    fun linearAt(clipId: String, local: Long) = mapKeysAt(clipId, local, "Linear keyframe") { prm, k ->
+        val i = prm.keys.indexOf(k)
+        prm.copy(keys = prm.keys.mapIndexed { j, it ->
+            when {
+                j == i -> it.copy(interp = com.amiri.cut.core.model.Interp.LINEAR)
+                j == i - 1 && it.interp != com.amiri.cut.core.model.Interp.HOLD -> it.copy(interp = com.amiri.cut.core.model.Interp.LINEAR)
+                else -> it
+            }
+        })
+    }
+
+    /** Toggles a key between linear and eased (double-tap on the timeline). */
+    fun toggleEaseAt(clipId: String, local: Long) {
+        val c = project?.clip(clipId) ?: return
+        val m = c.keyMarks(keyTolerance()).minByOrNull { kotlin.math.abs(it.t - local) } ?: return
+        if (m.easeIn || m.easeOut) linearAt(clipId, m.t)
+        else easyEaseAt(clipId, m.t)
+    }
 
     // ═════════════════════════ Quick keyframes ═════════════════════════
 

@@ -53,6 +53,7 @@ import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.Category
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.CloseFullscreen
 import androidx.compose.ui.geometry.Offset
@@ -134,13 +135,17 @@ fun EditorScreen(
     }
 
     c.clipMenuFor?.let { id -> ClipMenuSheet(c, id) }
+    c.keyMenu?.let { (id, t) -> KeyMenuSheet(c, id, t) }
 }
 
 @Composable
 private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Roto needs a big canvas: hide the timeline automatically (toggle with ⤢ in the transport bar).
-    LaunchedEffect(c.activeTool) { c.expandedPreview = c.activeTool == EditorTool.ROTO }
+    LaunchedEffect(c.activeTool) {
+        c.expandedPreview = c.activeTool == EditorTool.ROTO
+        if (c.activeTool != EditorTool.SHAPE) { c.cancelPen(); c.pathEdit = false }
+    }
     val expanded = c.expandedPreview
     if (landscape) {
         Row(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -181,6 +186,9 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
                 "${p.settings.width}×${p.settings.height} · ${p.settings.fps} fps",
                 color = Amiri.TextTertiary, fontSize = 10.sp,
             )
+        }
+        if (c.selectedClipId != null) {
+            IconAction(Icons.Outlined.DeleteOutline, "Delete selected layer", tint = Amiri.Danger) { c.deleteSelected() }
         }
         IconAction(Icons.AutoMirrored.Outlined.Undo, "Undo", enabled = c.canUndo) { c.undo() }
         IconAction(Icons.AutoMirrored.Outlined.Redo, "Redo", enabled = c.canRedo) { c.redo() }
@@ -349,6 +357,39 @@ private fun ToastHost(c: EditorController, modifier: Modifier) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun KeyMenuSheet(c: EditorController, clipId: String, local: Long) {
+    val p = c.project ?: return
+    val clip = p.clip(clipId) ?: run { c.keyMenu = null; return }
+    ModalBottomSheet(onDismissRequest = { c.keyMenu = null }, containerColor = Amiri.SurfaceHigh) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+            Text("Keyframe · ${clip.name}", color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                FrameTime.timecode(clip.startUs + local, p.settings.fps) + "  ·  double-tap a keyframe to toggle Easy Ease",
+                color = Amiri.TextSecondary, style = MonoStyle, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
+            )
+            val actions: List<Pair<String, () -> Unit>> = listOf(
+                "⧗  Easy Ease (both sides)" to { c.easyEaseAt(clipId, local) },
+                "◁  Ease in (arrive slowly)" to { c.easeArriveAt(clipId, local) },
+                "▷  Ease out (leave slowly)" to { c.easeLeaveAt(clipId, local) },
+                "◆  Linear" to { c.linearAt(clipId, local) },
+                "■  Hold (jump to next key)" to { c.setInterpAllAt(clipId, local, com.amiri.cut.core.model.Interp.HOLD) },
+                "Curve editor (Keys tool)" to { c.select(clipId); c.activeTool = EditorTool.KEYS },
+                "Delete keyframe" to { c.deleteKeysAt(clipId, local) },
+            )
+            actions.forEach { (label, f) ->
+                Text(
+                    label,
+                    color = if (label.startsWith("Delete")) Amiri.Danger else Amiri.TextPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.fillMaxWidth().clickable { c.keyMenu = null; f() }.padding(vertical = 13.dp),
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun ClipMenuSheet(c: EditorController, clipId: String) {
     val p = c.project ?: return
     val clip = p.clip(clipId) ?: run { c.clipMenuFor = null; return }
@@ -361,10 +402,12 @@ private fun ClipMenuSheet(c: EditorController, clipId: String) {
                     "${FrameTime.toFrame(clip.durationUs, p.settings.fps)} frames",
                 color = Amiri.TextSecondary, style = MonoStyle, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
             )
-            val actions: List<Pair<String, () -> Unit>> = listOf(
+            val actions: List<Pair<String, () -> Unit>> = listOf<Pair<String, () -> Unit>>(
                 "Split at playhead" to { c.select(clip.id); c.split(); Haptics.confirm(view) },
                 "Duplicate" to { c.select(clip.id); c.duplicateSelected() },
                 (if (clip.locked) "Unlock clip" else "Lock clip") to { c.toggleClipLock(clip.id) },
+            ) + (if (p.trackOfClip(clip.id)?.acceptsVisual == true && p.asset(clip.assetId)?.hasAudio == true && !clip.muted)
+                listOf<Pair<String, () -> Unit>>("Detach audio" to { c.detachAudio(clip.id) }) else emptyList()) + listOf<Pair<String, () -> Unit>>(
                 "Delete" to { c.select(clip.id); c.deleteSelected() },
                 "Ripple delete" to { c.select(clip.id); c.rippleDeleteSelected() },
             )

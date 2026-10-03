@@ -228,7 +228,48 @@ object EffectCatalog {
     val ZOOMBLUR = EffectSpec("zoomblur", "Zoom Blur", EffectCategory.BLUR, params = listOf(p("x", "Center X", 0f, 1f, 0.5f), p("y", "Center Y", 0f, 1f, 0.5f), p("amount", "Amount", 0f, 1f, 0.3f)))
 
     val CHROMAB = EffectSpec("chromab", "Chromatic Aberration", EffectCategory.DISTORTION, params = listOf(p("amount", "Amount", 0f, 1f, 0.3f), deg("angle", "Angle", -180f, 180f, 0f)))
-    val WAVE = EffectSpec("wave", "Wave Warp", EffectCategory.DISTORTION, params = listOf(p("amp", "Amplitude", 0f, 0.1f, 0.015f, 1000f, "‰"), p("freq", "Frequency", 0f, 40f, 8f, 1f, ""), p("speed", "Speed", 0f, 5f, 1f, 1f, "", 1), deg("angle", "Angle", -180f, 180f, 0f)))
+    val WAVE = EffectSpec(
+        "wave", "Wave Warp", EffectCategory.DISTORTION,
+        params = listOf(
+            p("amp", "Wave height", 0f, 0.15f, 0.015f, 1000f, "‰"),
+            p("freq", "Waves across", 0f, 40f, 8f, 1f, "", 1),
+            deg("angle", "Direction", -180f, 180f, 0f),
+            p("speed", "Wave speed", -5f, 5f, 1f, 1f, " /s", 1),
+            deg("phase", "Phase", -360f, 360f, 0f),
+        ),
+        options = listOf(
+            OptionSpec("type", "Wave type", listOf("Sine", "Square", "Triangle", "Sawtooth", "Circle", "Semicircle", "Noise"), "Sine"),
+            OptionSpec("pin", "Pinning", listOf("None", "All edges", "Left & right", "Top & bottom"), "None"),
+        ),
+        description = "Ripples the layer with a travelling wave.",
+    )
+
+    val SABER = EffectSpec(
+        "saber", "Saber", EffectCategory.LIGHT,
+        params = listOf(
+            p("glow", "Glow intensity", 0f, 4f, 1.2f, 100f, "%"),
+            p("spread", "Glow spread", 0f, 1f, 0.35f),
+            p("core", "Core size", 0f, 0.05f, 0.006f, 1000f, "‰", 1),
+            p("coreBright", "Core brightness", 0f, 2f, 1f),
+            p("flicker", "Flicker", 0f, 1f, 0f),
+            p("flickerSpeed", "Flicker speed", 0f, 30f, 10f, 1f, " /s", 1),
+            p("distort", "Distortion", 0f, 1f, 0f),
+            p("distortSpeed", "Distortion speed", 0f, 5f, 1f, 1f, "", 1),
+            p("start", "Start offset", 0f, 1f, 0f),
+            p("end", "End offset", 0f, 1f, 1f),
+            p("offset", "Offset (loop)", -1f, 1f, 0f),
+            p("x1", "Line start X", -0.5f, 1.5f, 0.2f),
+            p("y1", "Line start Y", -0.5f, 1.5f, 0.5f),
+            p("x2", "Line end X", -0.5f, 1.5f, 0.8f),
+            p("y2", "Line end Y", -0.5f, 1.5f, 0.5f),
+        ) + rgb("c", "Glow color", 0.15f, 0.5f, 1f),
+        options = listOf(
+            OptionSpec("source", "Core source", listOf("Layer path", "Line"), "Layer path"),
+            OptionSpec("composite", "Composite", listOf("Add", "Saber only"), "Add"),
+        ),
+        colors = listOf(Triple("cr", "cg", "cb")),
+        description = "Energy beam along the layer's pen path / shape outline / masks, or a straight line.",
+    )
     val BULGE = EffectSpec("bulge", "Lens Bulge", EffectCategory.DISTORTION, params = listOf(p("amount", "Amount", -1f, 1f, 0.4f), p("x", "Center X", 0f, 1f, 0.5f), p("y", "Center Y", 0f, 1f, 0.5f), p("radius", "Radius", 0.05f, 1f, 0.4f)))
 
     val SHARPEN = EffectSpec("sharpen", "Sharpen", EffectCategory.STYLIZE, params = listOf(p("amount", "Amount", 0f, 2f, 0.6f)))
@@ -236,7 +277,7 @@ object EffectCatalog {
     val MOSAIC = EffectSpec("mosaic", "Mosaic", EffectCategory.STYLIZE, params = listOf(p("size", "Cell size", 0.002f, 0.1f, 0.02f, 1000f, "‰")))
     val VIGNETTE = EffectSpec("vignette", "Vignette", EffectCategory.STYLIZE, params = listOf(p("amount", "Amount", 0f, 1f, 0.5f), p("feather", "Feather", 0.05f, 1f, 0.5f), p("roundness", "Roundness", 0f, 1f, 1f)))
 
-    val ALL: List<EffectSpec> = listOf(GLOW, CC_SWEEP, SWEEP, WIGGLE, RAYS, LEAK, FILM, BLUR, DIRBLUR, ZOOMBLUR, CHROMAB, WAVE, BULGE, COLOR, LUT, CHROMA, SHARPEN, POSTERIZE, MOSAIC, VIGNETTE)
+    val ALL: List<EffectSpec> = listOf(SABER, GLOW, CC_SWEEP, SWEEP, WIGGLE, RAYS, LEAK, FILM, BLUR, DIRBLUR, ZOOMBLUR, CHROMAB, WAVE, BULGE, COLOR, LUT, CHROMA, SHARPEN, POSTERIZE, MOSAIC, VIGNETTE)
 
     fun spec(type: String): EffectSpec? = ALL.firstOrNull { it.type == type }
     fun byCategory(c: EffectCategory) = ALL.filter { it.category == c && !it.hidden }
@@ -268,6 +309,10 @@ object AudioSpec {
         ParamSpec("volume", "Volume", 0f, 2f, 1f),
         ParamSpec("fadeIn", "Fade in", 0f, 10f, 0f, 1f, " s", 1),
         ParamSpec("fadeOut", "Fade out", 0f, 10f, 0f, 1f, " s", 1),
+        ParamSpec("pan", "Pan (L / R)", -1f, 1f, 0f),
+        ParamSpec("bass", "Bass", -12f, 12f, 0f, 1f, " dB", 1),
+        ParamSpec("mid", "Voice / mid", -12f, 12f, 0f, 1f, " dB", 1),
+        ParamSpec("treble", "Treble", -12f, 12f, 0f, 1f, " dB", 1),
     )
     fun def(id: String): Float = PARAMS.firstOrNull { it.id == id }?.default ?: 0f
 }
@@ -330,6 +375,9 @@ object ShapeSpecDefaults {
         ParamSpec("fillA", "Fill opacity", 0f, 1f, 1f),
         ParamSpec("strokeW", "Stroke width", 0f, 0.1f, 0f, 1000f, "‰"),
         ParamSpec("strokeA", "Stroke opacity", 0f, 1f, 1f),
+        ParamSpec("trimStart", "Trim start", 0f, 1f, 0f),
+        ParamSpec("trimEnd", "Trim end", 0f, 1f, 1f),
+        ParamSpec("trimOffset", "Trim offset", -1f, 1f, 0f),
     )
     val COLORS = listOf(
         Triple("f", "Fill color", floatArrayOf(1f, 1f, 1f)),

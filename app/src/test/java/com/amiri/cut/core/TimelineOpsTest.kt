@@ -142,4 +142,55 @@ class TimelineOpsTest {
         val redone = h.redo(p0)!!
         assertEquals(p1, redone.project)
     }
+
+    @Test fun soundEffectsGoToSfxTrackBelowMusic() {
+        var p = project()
+        val clipVid = video("v", 4).copy(hasAudio = true)
+        val r = TimelineOps.placeSound(p, clipVid, 1_000_000L)!!
+        p = r.first
+        val t = p.trackOfClip(r.second.id)!!
+        assertEquals(TrackKind.AUDIO, t.kind)
+        assertEquals("SFX", t.name)
+        assertEquals(p.tracks.last().id, t.id)
+        // A second overlapping effect gets another SFX track.
+        val r2 = TimelineOps.placeSound(p, audio("s", 2), 1_500_000L)!!
+        assertEquals("SFX 2", r2.first.trackOfClip(r2.second.id)!!.name)
+        // A video without sound can't be placed as sound.
+        assertNull(TimelineOps.placeSound(p, video("n", 2), 0))
+    }
+
+    @Test fun detachAudioMutesVideoAndCopiesTiming() {
+        var p = project()
+        p = TimelineOps.appendToMain(p, video("a", 5).copy(hasAudio = true)).first
+        val c = v1(p).clips[0]
+        val (np, sound) = TimelineOps.detachAudio(p, c.id)!!
+        assertTrue(np.clip(c.id)!!.muted)
+        assertEquals(c.startUs, sound.startUs)
+        assertEquals(c.endUs, sound.endUs)
+        assertEquals(TrackKind.AUDIO, np.trackOfClip(sound.id)!!.kind)
+        assertNull(TimelineOps.detachAudio(np, c.id))
+    }
+
+    @Test fun penPathStaysInPlace() {
+        val pts = listOf(0.2f, 0.3f, 0f, 0f, 0f, 0f, 0.6f, 0.7f, 0f, 0f, 0f, 0f)
+        val (p, c) = TimelineOps.addPathShape(project(), 0, pts, false)
+        assertNotNull(p.clip(c.id))
+        assertEquals(0.4f, c.transform.at("ax", 0, 0f), 1e-5f)
+        assertEquals(-0.1f, c.transform.at("px", 0, 0f), 1e-5f)
+        assertEquals(0f, c.shape!!.props.at("fillA", 0, 1f), 0f)
+    }
+
+    @Test fun keyMarksShowEase() {
+        val prm = com.amiri.cut.core.model.Param(0f, listOf(
+            com.amiri.cut.core.model.Key(0, 0f, com.amiri.cut.core.model.Interp.LINEAR),
+            com.amiri.cut.core.model.Key(1_000_000, 1f, com.amiri.cut.core.model.Interp.EASE_IN_OUT),
+            com.amiri.cut.core.model.Key(2_000_000, 0f, com.amiri.cut.core.model.Interp.HOLD),
+        ))
+        val c = com.amiri.cut.core.model.Clip("c", "", "c", 0, 0, 3_000_000, transform = com.amiri.cut.core.model.Props(mapOf("px" to prm)))
+        val m = c.keyMarks()
+        assertEquals(3, m.size)
+        assertFalse(m[0].easeIn || m[0].easeOut)
+        assertTrue(m[1].easeOut && !m[1].easeIn)
+        assertTrue(m[2].easeIn && m[2].hold)
+    }
 }

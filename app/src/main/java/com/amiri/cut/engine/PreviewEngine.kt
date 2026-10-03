@@ -4,7 +4,12 @@ import android.content.Context
 import android.os.SystemClock
 import android.view.Surface
 import androidx.annotation.OptIn
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -50,7 +55,9 @@ class FrameState(
 @OptIn(UnstableApi::class)
 class PreviewEngine(private val context: Context) {
 
-    private class Slave(val player: ExoPlayer) {
+    private class Slave(val pf: Pair<ExoPlayer, ClipAudioProcessor>) {
+        val player: ExoPlayer get() = pf.first
+        val fx: ClipAudioProcessor get() = pf.second
         var uri: String? = null
         var clipId: String? = null
         var speed: Float = 1f
@@ -104,12 +111,27 @@ class PreviewEngine(private val context: Context) {
         }
     }
 
-    private fun newPlayer(): ExoPlayer = ExoPlayer.Builder(context)
-        .setHandleAudioBecomingNoisy(true)
-        .build().apply {
-            repeatMode = Player.REPEAT_MODE_OFF
-            setSeekParameters(SeekParameters.EXACT)
+    private fun newPlayer(audioOnly: Boolean = false): Pair<ExoPlayer, ClipAudioProcessor> {
+        val fx = ClipAudioProcessor()
+        val rf = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
+                DefaultAudioSink.Builder(context)
+                    .setAudioProcessors(arrayOf<AudioProcessor>(fx))
+                    .setEnableFloatOutput(false)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .build()
         }
+        val pl = ExoPlayer.Builder(context, rf)
+            .setHandleAudioBecomingNoisy(true)
+            .build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+                setSeekParameters(SeekParameters.EXACT)
+                // Sound-only players (audio / SFX tracks) never decode pictures.
+                if (audioOnly) trackSelectionParameters = trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true).build()
+            }
+        return pl to fx
+    }
 
     // ───────────────────────── surfaces (from the GL renderer) ─────────────────────────
 
@@ -298,7 +320,7 @@ class PreviewEngine(private val context: Context) {
                 audio[t.id]?.let { s -> s.player.playWhenReady = false; s.clipId = null }
                 continue
             }
-            val slave = audio.getOrPut(t.id) { Slave(newPlayer()) }
+            val slave = audio.getOrPut(t.id) { Slave(newPlayer(audioOnly = true)) }
             drive(slave, t, clip, asset, pos, playing, forceSeek, toleranceUs = 120_000)
         }
     }
@@ -326,6 +348,11 @@ class PreviewEngine(private val context: Context) {
         }
         s.clipId = clip.id
         s.player.volume = gainAt(track, clip, pos).coerceIn(0f, 1f)
+        val local = pos - clip.startUs
+        s.fx.set(
+            clip.audio.at("bass", local, 0f), clip.audio.at("mid", local, 0f),
+            clip.audio.at("treble", local, 0f), clip.audio.at("pan", local, 0f),
+        )
         val sp = clip.speedAt(pos).coerceIn(0.1f, 8f)
         if (abs(sp - s.speed) > 0.01f) {
             s.player.playbackParameters = PlaybackParameters(sp)

@@ -637,11 +637,77 @@ uniform float uSpeed;
 uniform float uAngle;
 uniform float uTime;
 uniform float uAspect;
+uniform float uPhase;
+uniform int uType;
+uniform int uPin;
+float vnoise(float x) {
+  float i = floor(x); float f = fract(x);
+  float a = hash(vec2(i, 3.7)); float b = hash(vec2(i + 1.0, 3.7));
+  return mix(a, b, f * f * (3.0 - 2.0 * f)) * 2.0 - 1.0;
+}
+float wave(float x) {
+  float f = fract(x);
+  if (uType == 1) return f < 0.5 ? 1.0 : -1.0;
+  if (uType == 2) return 1.0 - 4.0 * abs(f - 0.5);
+  if (uType == 3) return 2.0 * f - 1.0;
+  if (uType == 4) { if (f < 0.5) { float y = 4.0 * f - 1.0; return sqrt(max(0.0, 1.0 - y * y)); } float y = 4.0 * f - 3.0; return -sqrt(max(0.0, 1.0 - y * y)); }
+  if (uType == 5) { float y = 2.0 * f - 1.0; return sqrt(max(0.0, 1.0 - y * y)) * 2.0 - 1.0; }
+  if (uType == 6) return vnoise(x * 2.0);
+  return sin(x * 6.2831853);
+}
 void main() {
   vec2 dir = vec2(cos(uAngle), sin(uAngle));
   vec2 perp = vec2(-dir.y, dir.x);
-  float ph = dot(vUv * vec2(uAspect, 1.0), dir) * uFreq * 6.2831 + uTime * uSpeed * 6.2831;
-  gl_FragColor = texture2D(uTex, vUv + perp * uAmp * sin(ph));
+  float ph = dot(vUv * vec2(uAspect, 1.0), dir) * uFreq - uTime * uSpeed + uPhase;
+  float pin = 1.0;
+  float ex = smoothstep(0.0, 0.12, min(vUv.x, 1.0 - vUv.x));
+  float ey = smoothstep(0.0, 0.12, min(vUv.y, 1.0 - vUv.y));
+  if (uPin == 1) pin = ex * ey;
+  if (uPin == 2) pin = ex;
+  if (uPin == 3) pin = ey;
+  vec2 d = perp * uAmp * wave(ph) * pin;
+  gl_FragColor = texture2D(uTex, vUv + vec2(d.x / uAspect, d.y));
+}
+"""
+
+    /** Copies a bitmap texture (y down) into an FBO (y up). */
+    const val COPY_FLIP = COMMON + """
+uniform sampler2D uTex;
+void main() { gl_FragColor = texture2D(uTex, vec2(vUv.x, 1.0 - vUv.y)); }
+"""
+
+    const val SABER = COMMON + """
+uniform sampler2D uTex;
+uniform sampler2D uCore;
+uniform sampler2D uG1;
+uniform sampler2D uG2;
+uniform vec3 uColor;
+uniform float uGlow;
+uniform float uCoreB;
+uniform float uFlick;
+uniform float uDist;
+uniform float uTime;
+uniform float uAspect;
+uniform int uMode;
+float n2(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+void main() {
+  vec2 p = vUv * vec2(uAspect, 1.0) * 7.0;
+  vec2 off = vec2(n2(p + vec2(uTime * 1.3, 0.0)) - 0.5, n2(p + vec2(5.2, uTime * 1.7)) - 0.5);
+  off += 0.5 * vec2(n2(p * 2.3 - vec2(uTime * 2.1, 1.0)) - 0.5, n2(p * 2.3 + vec2(9.1, uTime * 2.6)) - 0.5);
+  vec2 q = vUv + off * uDist * 0.035;
+  float core = texture2D(uCore, q).a;
+  float g1 = texture2D(uG1, q).a;
+  float g2 = texture2D(uG2, q).a;
+  vec3 glow = uColor * (g1 * 1.8 + g2 * 1.3) * uGlow * uFlick;
+  vec3 hot = mix(uColor, vec3(1.0), 0.85) * smoothstep(0.05, 0.7, core) * uCoreB * mix(0.7, 1.0, uFlick);
+  vec3 add = glow + hot;
+  vec4 s = uMode == 1 ? vec4(0.0) : texture2D(uTex, vUv);
+  float a = clamp(s.a + max(max(add.r, add.g), add.b), 0.0, 1.0);
+  vec3 rgb = s.rgb + add;
+  gl_FragColor = vec4(min(rgb, vec3(a)), a);
 }
 """
 

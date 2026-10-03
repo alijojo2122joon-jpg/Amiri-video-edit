@@ -116,7 +116,8 @@ fun PreviewPane(c: EditorController, modifier: Modifier = Modifier) {
     val tool = c.activeTool
     // Two-finger view zoom/pan wherever two fingers aren't already used to transform a layer.
     val viewerGestures = when (tool) {
-        EditorTool.TRANSFORM, EditorTool.TEXT, EditorTool.SHAPE, EditorTool.KEYS -> false
+        EditorTool.SHAPE -> c.shapePen || c.pathEdit
+        EditorTool.TRANSFORM, EditorTool.TEXT, EditorTool.KEYS -> false
         EditorTool.MASK -> c.penActive
         else -> true
     }
@@ -172,6 +173,8 @@ fun PreviewPane(c: EditorController, modifier: Modifier = Modifier) {
             when {
                 picking != null -> EyedropperOverlay(c, p, pos)
                 c.activeTool == EditorTool.ROTO -> c.rotoTarget()?.let { RotoOverlay(c, p, it, pos) } ?: TapToPlay(c)
+                c.activeTool == EditorTool.SHAPE && c.shapePen -> ShapePenOverlay(c)
+                c.activeTool == EditorTool.SHAPE && c.pathEdit && c.selectedClip()?.shape?.kind == com.amiri.cut.core.model.ShapeKind.PATH -> PathEditOverlay(c, p, pos)
                 c.activeTool == EditorTool.TRANSFORM || c.activeTool == EditorTool.TEXT || c.activeTool == EditorTool.SHAPE || c.activeTool == EditorTool.KEYS -> TransformGizmo(c, p, pos)
                 c.activeTool == EditorTool.MASK -> MaskGizmo(c, p, pos)
                 c.activeTool == EditorTool.TRACK -> TrackGizmo(c, p, pos)
@@ -304,6 +307,186 @@ private fun TransformGizmo(c: EditorController, p: Project, pos: Long) {
     }
 }
 
+
+// ───────────────────────────── Pen tool (shape paths) ─────────────────────────────
+
+/**
+ * Draws a new pen path in canvas space. Tap = corner point, tap-and-drag = smooth point
+ * (drag pulls the bezier handle), tap the first point = close. Freehand mode records the
+ * finger and smooths it into bezier vertices. Two fingers zoom/pan the view instead.
+ */
+@Composable
+private fun ShapePenOverlay(c: EditorController) {
+    val accent = LocalAccent.current
+    val free = remember { mutableStateListOf<Offset>() }
+    Canvas(
+        Modifier.fillMaxSize().pointerInput(c.penFreehand) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val w = size.width.toFloat().coerceAtLeast(1f)
+                val h = size.height.toFloat().coerceAtLeast(1f)
+                val touch = 22.dp.toPx() / c.viewZoom
+                var multi = false
+                if (c.penFreehand) {
+                    free.clear(); free += down.position
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        if (ev.changes.count { it.pressed } >= 2) multi = true
+                        val ch = ev.changes.firstOrNull { it.id == down.id }
+                        if (ch == null || !ch.pressed) { if (multi && ev.changes.any { it.pressed }) continue; break }
+                        if (!multi && (ch.position - free.last()).getDistance() > 4.dp.toPx() / c.viewZoom) free += ch.position
+                        ch.consume()
+                    }
+                    if (!multi && free.size >= 2) {
+                        val pts = smoothPath(free.map { it.x / w to it.y / h })
+                        c.penPoints.clear(); c.penPoints.addAll(pts)
+                        c.finishPen(false)
+                    }
+                    free.clear()
+                    return@awaitEachGesture
+                }
+                // Click-to-add pen.
+                val n = c.penPoints.size / 6
+                if (n >= 3) {
+                    val first = Offset(c.penPoints[0] * w, c.penPoints[1] * h)
+                    if ((down.position - first).getDistance() < touch) {
+                        if (waitForUpOrCancellation() != null) c.finishPen(true)
+                        return@awaitEachGesture
+                    }
+                }
+                val base = c.penPoints.size
+                c.penPoints.addAll(listOf(down.position.x / w, down.position.y / h, 0f, 0f, 0f, 0f))
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    if (ev.changes.count { it.pressed } >= 2) multi = true
+                    val ch = ev.changes.firstOrNull { it.id == down.id }
+                    if (ch == null || !ch.pressed) { if (multi && ev.changes.any { it.pressed }) continue; break }
+                    if (!multi && (ch.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                        val ox = (ch.position.x - down.position.x) / w
+                        val oy = (ch.position.y - down.position.y) / h
+                        if (c.penPoints.size >= base + 6) {
+                            c.penPoints[base + 4] = ox; c.penPoints[base + 5] = oy
+                            c.penPoints[base + 2] = -ox; c.penPoints[base + 3] = -oy
+                        }
+                    }
+                    ch.consume()
+                }
+                if (multi) { repeat(6) { if (c.penPoints.size > base) c.penPoints.removeAt(c.penPoints.lastIndex) } }
+            }
+        },
+    ) {
+        val w = size.width; val h = size.height
+        val z = c.viewZoom
+        val pts = c.penPoints.toList()
+        val n = pts.size / 6
+        if (n >= 1) {
+            val path = Path()
+            fun x(i: Int) = pts[i * 6] * w
+            fun y(i: Int) = pts[i * 6 + 1] * h
+            path.moveTo(x(0), y(0))
+            for (k in 1 until n) path.cubicTo(
+                x(k - 1) + pts[(k - 1) * 6 + 4] * w, y(k - 1) + pts[(k - 1) * 6 + 5] * h,
+                x(k) + pts[k * 6 + 2] * w, y(k) + pts[k * 6 + 3] * h, x(k), y(k),
+            )
+            drawPath(path, Color.Black.copy(alpha = 0.5f), style = Stroke(4f / z))
+            drawPath(path, accent, style = Stroke(2f / z))
+            for (i in 0 until n) {
+                val o = Offset(x(i), y(i))
+                val hx = pts[i * 6 + 4]; val hy = pts[i * 6 + 5]
+                if (hx != 0f || hy != 0f) {
+                    val a = Offset(o.x + hx * w, o.y + hy * h); val b = Offset(o.x - hx * w, o.y - hy * h)
+                    drawLine(Color.White.copy(alpha = 0.6f), a, b, 1f / z)
+                    drawCircle(Color.White, 3.dp.toPx() / z, a); drawCircle(Color.White, 3.dp.toPx() / z, b)
+                }
+                drawRect(if (i == 0) Color(0xFFFFD27A) else Color.White, o - Offset(4.dp.toPx() / z, 4.dp.toPx() / z), Size(8.dp.toPx() / z, 8.dp.toPx() / z))
+            }
+        }
+        if (free.size >= 2) {
+            val path = Path().apply { moveTo(free[0].x, free[0].y); for (o in free.drop(1)) lineTo(o.x, o.y) }
+            drawPath(path, accent, style = Stroke(2.5f / z, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+    }
+}
+
+/** Turns a dense finger polyline into smooth bezier vertices (Catmull-Rom handles). */
+private fun smoothPath(raw: List<Pair<Float, Float>>): List<Float> {
+    // Thin the points (keep roughly every 1.5% of the canvas).
+    val pts = ArrayList<Pair<Float, Float>>()
+    for (q in raw) {
+        val l = pts.lastOrNull()
+        if (l == null || kotlin.math.hypot(q.first - l.first, q.second - l.second) > 0.015f) pts += q
+    }
+    if (pts.last() != raw.last()) pts += raw.last()
+    val out = ArrayList<Float>(pts.size * 6)
+    for (i in pts.indices) {
+        val a = pts[max(0, i - 1)]; val b = pts[minOf(pts.lastIndex, i + 1)]
+        val tx = (b.first - a.first) / 6f; val ty = (b.second - a.second) / 6f
+        out += listOf(pts[i].first, pts[i].second, -tx, -ty, tx, ty)
+    }
+    return out
+}
+
+/** Drag the vertices / bezier handles of the selected pen path. */
+@Composable
+private fun PathEditOverlay(c: EditorController, p: Project, pos: Long) {
+    val accent = LocalAccent.current
+    val clip = c.selectedClip() ?: return
+    val spec = clip.shape ?: return
+    Canvas(
+        Modifier.fillMaxSize().pointerInput(clip.id) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                c.engine.pause()
+                val cl = c.selectedClip() ?: return@awaitEachGesture
+                val sp = cl.shape ?: return@awaitEachGesture
+                val g = layerGeo(c, p, cl, c.engine.position.value, size.width, size.height) ?: return@awaitEachGesture
+                val touch = 24.dp.toPx() / c.viewZoom
+                // Find the nearest vertex or handle.
+                var best = -1; var part = 0; var bestD = touch
+                for (i in 0 until sp.vertexCount) {
+                    val b = i * 6
+                    val cands = listOf(
+                        0 to (sp.path[b] to sp.path[b + 1]),
+                        1 to (sp.path[b] + sp.path[b + 2] to sp.path[b + 1] + sp.path[b + 3]),
+                        2 to (sp.path[b] + sp.path[b + 4] to sp.path[b + 1] + sp.path[b + 5]),
+                    )
+                    for ((pt, uv) in cands) {
+                        if (pt != 0 && sp.path[b + if (pt == 1) 2 else 4] == 0f && sp.path[b + if (pt == 1) 3 else 5] == 0f) continue
+                        val d = (g.toCanvas(uv.first, uv.second) - down.position).getDistance()
+                        if (d < bestD) { bestD = d; best = i; part = pt }
+                    }
+                }
+                if (best < 0) return@awaitEachGesture
+                c.beginEdit()
+                do {
+                    val ev = awaitPointerEvent()
+                    if (ev.changes.count { it.pressed } >= 2) break
+                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                    val (u, v) = g.toLayer(ch.position)
+                    c.movePathPoint(cl.id, best, part, u, v)
+                    ch.consume()
+                } while (ch.pressed)
+                c.endEdit("Edit path")
+            }
+        },
+    ) {
+        val g = layerGeo(c, p, clip, pos, size.width.toInt(), size.height.toInt()) ?: return@Canvas
+        val z = c.viewZoom
+        val n = spec.vertexCount
+        for (i in 0 until n) {
+            val b = i * 6
+            val o = g.toCanvas(spec.path[b], spec.path[b + 1])
+            for (hp in listOf(2, 4)) {
+                if (spec.path[b + hp] == 0f && spec.path[b + hp + 1] == 0f) continue
+                val hpt = g.toCanvas(spec.path[b] + spec.path[b + hp], spec.path[b + 1] + spec.path[b + hp + 1])
+                drawLine(Color.White.copy(alpha = 0.6f), o, hpt, 1f / z)
+                drawCircle(accent, 4.dp.toPx() / z, hpt)
+            }
+            drawRect(Color.White, o - Offset(5.dp.toPx() / z, 5.dp.toPx() / z), Size(10.dp.toPx() / z, 10.dp.toPx() / z))
+            drawRect(Color.Black, o - Offset(5.dp.toPx() / z, 5.dp.toPx() / z), Size(10.dp.toPx() / z, 10.dp.toPx() / z), style = Stroke(1f / z))
+        }
+    }
+}
 
 // ───────────────────────────── Mask gizmo ─────────────────────────────
 

@@ -241,7 +241,7 @@ class Compositor(private val text: TextRenderer) {
         for (e in clip.effects) {
             if (!e.enabled) continue
             if (opt.bypassColorClipId == clip.id && EffectCatalog.spec(e.type)?.category == com.amiri.cut.core.effects.EffectCategory.COLOR) continue
-            cur = applyEffect(e, cur, local, src)
+            cur = applyEffect(e, cur, local, src, clip, cw, ch)
         }
         return Layer(cur, baseW, baseH)
     }
@@ -385,7 +385,7 @@ class Compositor(private val text: TextRenderer) {
         prog("copy", Shaders.COPY).apply { use(); tex("uTex", 0, canvas.tex); draw() }
         for (e in active) {
             if (opt.bypassColorClipId == clip.id && EffectCatalog.spec(e.type)?.category == com.amiri.cut.core.effects.EffectCategory.COLOR) continue
-            work = applyEffect(e, work, local, src)
+            work = applyEffect(e, work, local, src, clip, canvas.width, canvas.height)
         }
         val opacity = clip.transform.at("opacity", local, 1f).coerceIn(0f, 1f)
         val out = pool.obtain(canvas.width, canvas.height)
@@ -418,7 +418,7 @@ class Compositor(private val text: TextRenderer) {
 
     private fun blendMode(e: Effect): Int = if (e.opts["blend"] == "Add") 1 else 0
 
-    private fun applyEffect(e: Effect, input: Fbo, local: Long, src: FrameSources): Fbo {
+    private fun applyEffect(e: Effect, input: Fbo, local: Long, src: FrameSources, clip: Clip, cw: Int, ch: Int): Fbo {
         val spec = EffectCatalog.spec(e.type) ?: return input
         fun v(id: String) = e.props.at(id, local, spec.param(id)?.default ?: 0f)
         val w = input.width
@@ -557,6 +557,25 @@ class Compositor(private val text: TextRenderer) {
             "wave" -> run("wave", Shaders.WAVE) { p ->
                 p.f1("uAmp", v("amp")); p.f1("uFreq", v("freq")); p.f1("uSpeed", v("speed"))
                 p.f1("uAngle", Math.toRadians(v("angle").toDouble()).toFloat()); p.f1("uTime", secs); p.f1("uAspect", aspect)
+                p.f1("uPhase", v("phase") / 360f)
+                p.i1("uType", listOf("Sine", "Square", "Triangle", "Sawtooth", "Circle", "Semicircle", "Noise").indexOf(e.opts["type"] ?: "Sine").coerceAtLeast(0))
+                p.i1("uPin", listOf("None", "All edges", "Left & right", "Top & bottom").indexOf(e.opts["pin"] ?: "None").coerceAtLeast(0))
+            }
+            "saber" -> {
+                val core = saberCore(e, clip, local, w, h, cw, ch, ::v)
+                if (core == null) { pool.recycle(out); return input }
+                val spread = v("spread")
+                val g1 = blur(core, 2f + (0.004f + spread * 0.02f) * maxDim)
+                val g2 = blur(core, 4f + (0.02f + spread * 0.12f) * maxDim)
+                val fs = v("flickerSpeed").toDouble()
+                val flick = (1.0 - v("flicker") * (0.5 + 0.5 * Wiggle.noise(secs * fs, 7, 1.0))).toFloat().coerceIn(0f, 1f)
+                run("saber", Shaders.SABER) { p ->
+                    p.tex("uCore", 1, core.tex); p.tex("uG1", 2, g1.tex); p.tex("uG2", 3, g2.tex)
+                    p.f3("uColor", v("cr"), v("cg"), v("cb")); p.f1("uGlow", v("glow")); p.f1("uCoreB", v("coreBright"))
+                    p.f1("uFlick", flick); p.f1("uDist", v("distort")); p.f1("uTime", secs * v("distortSpeed")); p.f1("uAspect", aspect)
+                    p.i1("uMode", if (e.opts["composite"] == "Saber only") 1 else 0)
+                }
+                pool.recycle(core); pool.recycle(g1); pool.recycle(g2)
             }
             "bulge" -> run("bulge", Shaders.BULGE) { p ->
                 p.f2("uCenter", v("x"), 1f - v("y")); p.f1("uAmount", v("amount")); p.f1("uRadius", v("radius")); p.f1("uAspect", aspect)
@@ -573,7 +592,76 @@ class Compositor(private val text: TextRenderer) {
         return out
     }
 
+    private val saberTex = LinkedHashMap<String, Cached>(8, 0.75f, true)
+
+    /**
+     * Rasterizes the saber core (a stroked, trimmed path in layer pixel space) and returns it
+     * in an FBO (white, premultiplied). The path comes from the layer's pen path / shape
+     * outline, its masks, or the straight line parameters.
+     */
+    private fun saberCore(e: Effect, clip: Clip, local: Long, w: Int, h: Int, cw: Int, ch: Int, v: (String) -> Float): Fbo? {
+        val path: Path = if (e.opts["source"] == "Line") {
+            Path().apply { moveTo(v("x1") * w, v("y1") * h); lineTo(v("x2") * w, v("y2") * h) }
+        } else {
+            val spec = clip.shape
+            when {
+                spec != null -> ShapeRenderer.buildPath(spec, local, cw, ch).also { pth ->
+                    // Shape bitmaps are rendered at canvas scale; the layer FBO may differ slightly.
+                    val (bw, bh) = ShapeRenderer.measure(spec, local, cw, ch)
+                    if (bw != w || bh != h) pth.transform(android.graphics.Matrix().apply { setScale(w.toFloat() / bw, h.toFloat() / bh) })
+                }
+                clip.masks.isNotEmpty() -> Path().also { all ->
+                    for (m in clip.masks) {
+                        fun mv(id: String) = m.props.at(id, local, MaskSpec.def(id))
+                        val cx = mv("x") * w; val cy = mv("y") * h
+                        val mw = mv("w") * w; val mh = mv("h") * h
+                        val one = Path()
+                        when (m.shape) {
+                            MaskShape.RECT -> one.addRect(cx - mw / 2, cy - mh / 2, cx + mw / 2, cy + mh / 2, Path.Direction.CW)
+                            MaskShape.ELLIPSE -> one.addOval(cx - mw / 2, cy - mh / 2, cx + mw / 2, cy + mh / 2, Path.Direction.CW)
+                            MaskShape.PATH -> if (m.path.size >= 6) {
+                                // Path points live in the mask's unit box.
+                                one.moveTo(cx - mw / 2 + m.path[0] * mw, cy - mh / 2 + m.path[1] * mh)
+                                var i = 2
+                                while (i + 1 < m.path.size) { one.lineTo(cx - mw / 2 + m.path[i] * mw, cy - mh / 2 + m.path[i + 1] * mh); i += 2 }
+                                one.close()
+                            }
+                        }
+                        val rot = mv("rot")
+                        if (rot != 0f) one.transform(android.graphics.Matrix().apply { setRotate(rot, cx, cy) })
+                        all.addPath(one)
+                    }
+                }
+                else -> Path().apply { moveTo(v("x1") * w, v("y1") * h); lineTo(v("x2") * w, v("y2") * h) }
+            }
+        }
+        val trimmed = ShapeRenderer.trim(path, v("start"), v("end"), v("offset"))
+        val stroke = max(1.2f, v("core") * min(w, h))
+        val key = "${clip.id}|${e.id}|$w|$h|$stroke|" + android.graphics.PathMeasure(trimmed, false).length.toString() +
+            "|${v("start")}|${v("end")}|${v("offset")}|${v("x1")},${v("y1")},${v("x2")},${v("y2")}|${clip.shape?.path?.hashCode()}|${clip.masks.hashCode()}"
+        val c = saberTex.getOrPut(clip.id + e.id) { Cached(0, null) }
+        if (c.key != key) {
+            val sc = min(1f, 2048f / max(w, h))
+            val bw = max(2, (w * sc).roundToInt()); val bh = max(2, (h * sc).roundToInt())
+            val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+            val cv = Canvas(bmp)
+            cv.scale(sc, sc)
+            cv.drawPath(trimmed, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = stroke
+                strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+            })
+            c.tex = Gl.uploadBitmap(bmp, c.tex); c.key = key
+            bmp.recycle()
+            evict(saberTex, 8)
+        }
+        val fb = pool.obtain(w, h)
+        fb.bind()
+        prog("copy_flip", Shaders.COPY_FLIP).apply { use(); tex("uTex", 0, c.tex); draw() }
+        return fb
+    }
+
     fun release() {
+        saberTex.values.forEach { Gl.deleteTexture(it.tex) }; saberTex.clear()
         programs.values.forEach { it.release() }
         programs.clear()
         (imageTex.values + rotoTex.values + lutTex.values + curveTex.values + pathTex.values + textTex.values).forEach { Gl.deleteTexture(it.tex) }
