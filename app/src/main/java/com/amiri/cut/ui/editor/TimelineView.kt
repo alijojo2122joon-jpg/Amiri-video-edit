@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Lock
@@ -220,7 +221,11 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
     Row(modifier.background(Color(0xFF0D0D0F))) {
         // ───────── Track headers ─────────
         Box(Modifier.width(headerW).fillMaxHeight().clipToBounds()) {
-            Column(Modifier.offset { IntOffset(0, (rulerH - scrollY).roundToInt()) }) {
+            Column(
+                Modifier
+                    .wrapContentHeight(Alignment.Top, unbounded = true)
+                    .offset { IntOffset(0, (rulerH - scrollY).roundToInt()) },
+            ) {
                 p.tracks.forEachIndexed { i, t ->
                     TrackHeader(
                         t, Modifier.height(rowHeightDp(t.kind)).fillMaxWidth(),
@@ -690,6 +695,7 @@ private fun DrawScope.drawClip(
         // Clip name
         val label = buildString {
             if (clip.locked) append("🔒 ")
+            if (clip.roto != null && clip.roto.keys.isNotEmpty()) append(if (clip.roto.enabled) "◐ ROTO · " else "◐ off · ")
             append(clip.name)
             if (missing) append(" · MISSING")
         }

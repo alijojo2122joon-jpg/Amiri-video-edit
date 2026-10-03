@@ -53,6 +53,31 @@ data class MediaAsset(
     val displayHeight: Int get() = if (rotation % 180 == 0) height else width
 }
 
+/** One rotoscope mask keyframe: a mask image (in the clip's source frame) at a source time. */
+@Serializable
+data class RotoKey(
+    val sourceUs: Long,
+    /** File name inside the project's roto folder (immutable once written). */
+    val file: String,
+)
+
+/**
+ * Rotoscoping for a clip. The mask keeps what was painted and removes everything else.
+ * At a given source time the latest key at or before it is used (or the first key).
+ */
+@Serializable
+data class Roto(
+    val enabled: Boolean = true,
+    val invert: Boolean = false,
+    val keys: List<RotoKey> = emptyList(),
+) {
+    fun keyAt(sourceUs: Long): RotoKey? =
+        keys.lastOrNull { it.sourceUs <= sourceUs } ?: keys.firstOrNull()
+
+    fun withKey(k: RotoKey): Roto =
+        copy(keys = (keys.filterNot { it.sourceUs == k.sourceUs } + k).sortedBy { it.sourceUs })
+}
+
 @Serializable
 data class Clip(
     val id: String,
@@ -68,6 +93,8 @@ data class Clip(
     val speed: Float = 1f,
     /** Reserved for Stage 10 (audio tools). */
     val volume: Float = 1f,
+    /** Rotoscope mask (null = none). */
+    val roto: Roto? = null,
 ) {
     val durationUs: Long get() = sourceToTimeline(sourceOutUs - sourceInUs)
     val endUs: Long get() = startUs + durationUs

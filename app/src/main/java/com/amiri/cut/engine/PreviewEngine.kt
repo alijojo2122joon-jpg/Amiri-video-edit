@@ -52,7 +52,7 @@ class PreviewEngine(private val context: Context) {
     sealed interface Visual {
         data object None : Visual
         data class Video(val clipId: String, val assetId: String) : Visual
-        data class Image(val asset: MediaAsset) : Visual
+        data class Image(val asset: MediaAsset, val clipId: String) : Visual
     }
 
     private class Slave(val player: ExoPlayer) {
@@ -62,7 +62,18 @@ class PreviewEngine(private val context: Context) {
 
     private val scope = MainScope()
 
-    private val video = Slave(newPlayer())
+    /** GPU roto mask state read by [RotoMaskEffect] on the GL thread. */
+    val roto = RotoRuntime()
+
+    /** Supplies the roto mask bitmap for a clip at a source time (set by the editor). */
+    var maskProvider: ((Clip, Long) -> android.graphics.Bitmap?)? = null
+
+    /** True while the roto tool wants the untouched frame. */
+    var rotoBypass: Boolean
+        get() = roto.bypass
+        set(v) { if (roto.bypass != v) { roto.bypass = v; refreshFrame() } }
+
+    private val video = Slave(newPlayer().apply { setVideoEffects(listOf(RotoMaskEffect(roto))) })
     val videoPlayer: ExoPlayer get() = video.player
     private val audio = HashMap<String, Slave>()
 
@@ -227,15 +238,36 @@ class PreviewEngine(private val context: Context) {
                 video.clipId = null
                 video.player.playWhenReady = false
                 val cur = _visual.value
-                if (cur !is Visual.Image || cur.asset.id != asset.id) _visual.value = Visual.Image(asset)
+                if (cur !is Visual.Image || cur.asset.id != asset.id || cur.clipId != clip.id) _visual.value = Visual.Image(asset, clip.id)
             }
             MediaType.VIDEO -> {
+                updateRoto(clip, asset, pos)
                 drive(video, track, clip, asset, pos, playing, forceSeek, toleranceUs = 80_000)
                 val cur = _visual.value
                 if (cur !is Visual.Video || cur.clipId != clip.id) _visual.value = Visual.Video(clip.id, asset.id)
             }
             MediaType.AUDIO -> Unit
         }
+    }
+
+    private fun updateRoto(clip: Clip, asset: MediaAsset, pos: Long) {
+        roto.rotation = asset.rotation
+        val r = clip.roto
+        if (r == null || !r.enabled || r.keys.isEmpty()) {
+            roto.publish(null)
+            return
+        }
+        roto.invert = r.invert
+        roto.publish(maskProvider?.invoke(clip, clip.sourceTimeAt(pos)))
+    }
+
+    /** Re-renders the current frame (e.g. after the mask changed while paused). */
+    fun refreshFrame() {
+        val p = project ?: return
+        if (_playing.value) return
+        val top = TimelineOps.topVisualClipAt(p, _position.value) ?: return
+        p.asset(top.second.assetId)?.let { updateRoto(top.second, it, _position.value) }
+        if (video.uri != null) video.player.seekTo(video.player.currentPosition)
     }
 
     private fun syncAudio(p: Project, pos: Long, playing: Boolean, forceSeek: Boolean) {

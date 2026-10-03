@@ -43,6 +43,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import com.amiri.cut.media.RotoBrushMode
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.LayersClear
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.InvertColors
+import androidx.compose.material.icons.outlined.AutoFixHigh
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +82,7 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
         when (tool) {
             EditorTool.MEDIA -> MediaPanel(c)
             EditorTool.CUT -> CutPanel(c)
+            EditorTool.ROTO -> RotoPanel(c)
             else -> NotYetPanel(tool)
         }
     }
@@ -242,5 +252,104 @@ private fun NotYetPanel(tool: EditorTool) {
         Text("${tool.label} — arrives in Stage ${tool.stage}", color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium)
         Text(what, color = Amiri.TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
         Text("Not implemented in this build — no fake controls.", color = Amiri.TextTertiary, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
+
+// ───────────────────────────── Roto ─────────────────────────────
+
+@Composable
+private fun RotoPanel(c: EditorController) {
+    val accent = LocalAccent.current
+    val view = LocalView.current
+    val pos by c.engine.position.collectAsState()
+    val t = remember(c.project, pos, c.selectedClipId) { c.rotoTarget() }
+    val progress = c.rotoProgress
+    Column {
+        if (t == null) {
+            Text("Roto brush", color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Move the playhead over a video or photo clip, then paint the part you want to keep. Everything you don't paint is removed.",
+                color = Amiri.TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
+            )
+            return@Column
+        }
+        val roto = t.clip.roto
+        val keyHere = c.rotoKeyHere(t)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(t.clip.name, color = Amiri.TextPrimary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    when {
+                        roto == null || roto.keys.isEmpty() -> "No mask yet — paint the subject to keep it"
+                        keyHere -> "${roto.keys.size} mask frame(s) · editing this frame"
+                        else -> "${roto.keys.size} mask frame(s) · held from earlier frame"
+                    } + if (roto?.enabled == false) " · OFF" else "",
+                    color = Amiri.TextTertiary, fontSize = 10.sp,
+                )
+            }
+            ToggleChip("Result", c.rotoShowResult) { c.rotoShowResult = !c.rotoShowResult }
+        }
+
+        if (progress != null) {
+            Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { progress }, color = accent, trackColor = Amiri.SurfaceHigh,
+                    modifier = Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(2.dp)),
+                )
+                Text("Tracking ${(progress * 100).toInt()}%", color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 10.dp))
+                Text("Cancel", color = Amiri.Danger, fontSize = 12.sp, modifier = Modifier.clickable { c.rotoCancel() }.padding(6.dp))
+            }
+            return@Column
+        }
+
+        // Brush modes
+        Row(Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            RotoBrushMode.entries.forEach { m ->
+                ToggleChip(m.label, c.rotoMode == m) { Haptics.select(view); c.rotoMode = m }
+            }
+        }
+        // Sliders
+        LabeledSlider("Brush", c.rotoBrush, 0.01f..0.30f, "${(c.rotoBrush * 100).toInt()}%") { c.rotoBrush = it }
+        LabeledSlider("Feather", c.rotoFeather, 0f..0.05f, "${"%.1f".format(c.rotoFeather * 100)}%") { c.rotoFeather = it }
+        // Actions
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            PanelAction(Icons.Outlined.PlayArrow, "Propagate") { c.rotoPropagate() }
+            PanelAction(Icons.Outlined.AutoFixHigh, "Refine edge") { c.rotoRefineEdge() }
+            PanelAction(Icons.Outlined.InvertColors, if (roto?.invert == true) "Uninvert" else "Invert") { c.rotoToggleInvert() }
+            PanelAction(Icons.Outlined.ChevronLeft, "Prev key") { c.rotoJumpKey(false) }
+            PanelAction(Icons.Outlined.ChevronRight, "Next key") { c.rotoJumpKey(true) }
+            PanelAction(Icons.Outlined.LayersClear, "Clear frame") { c.rotoClearFrame() }
+            PanelAction(if (roto?.enabled == false) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff, if (roto?.enabled == false) "Enable" else "Disable") { c.rotoToggleEnabled() }
+            PanelAction(Icons.Outlined.DeleteOutline, "Remove") { c.rotoRemove() }
+        }
+    }
+}
+
+@Composable
+private fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        Modifier
+            .then(if (on) Modifier.glassAccent(accent, shape) else Modifier.glass(shape, strength = 0.7f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    ) {
+        Text(label, color = if (on) Amiri.TextPrimary else Amiri.TextSecondary, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
+    val accent = LocalAccent.current
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(34.dp)) {
+        Text(label, color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(56.dp))
+        androidx.compose.material3.Slider(
+            value = value, onValueChange = onChange, valueRange = range,
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Amiri.SurfaceHigh),
+            modifier = Modifier.weight(1f),
+        )
+        Text(display, color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(44.dp).padding(start = 6.dp))
     }
 }

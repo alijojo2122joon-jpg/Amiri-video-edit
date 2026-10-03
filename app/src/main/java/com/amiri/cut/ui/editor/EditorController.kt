@@ -28,6 +28,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import android.graphics.Bitmap as AndroidBitmap
+import com.amiri.cut.core.model.Clip
+import com.amiri.cut.core.model.Roto
+import com.amiri.cut.core.model.RotoKey
+import com.amiri.cut.core.model.Track
+import com.amiri.cut.media.RotoBrushMode
+import com.amiri.cut.media.RotoPainter
+import com.amiri.cut.media.RotoPropagator
 
 enum class Placement { APPEND_TO_MAIN, AT_PLAYHEAD, BIN_ONLY }
 
@@ -44,7 +54,8 @@ enum class EditorTool(val label: String, val stage: Int) {
     EFFECTS("Effects", 7),
     AUDIO("Audio", 10),
     ;
-    val available: Boolean get() = stage <= 1
+    /** Tools that are fully implemented in this build. */
+    val available: Boolean get() = this == MEDIA || this == CUT || this == ROTO
 }
 
 data class Toast(val text: String, val id: Long = System.nanoTime())
@@ -100,6 +111,9 @@ class EditorController(
     val isClosing: Boolean get() = closing
 
     init {
+        engine.maskProvider = { clip, sourceUs ->
+            clip.roto?.keyAt(sourceUs)?.let { k -> app.roto.load(projectId, k.file) }
+        }
         // Periodic autosave safety net (every 10 s while there are unsaved changes).
         scope.launch {
             while (isActive) {
@@ -436,5 +450,195 @@ class EditorController(
     fun rename(name: String) {
         val p = project ?: return
         commit("Rename project", p.copy(name = name))
+    }
+
+    // ───────────────────────── Roto brush ─────────────────────────
+
+    data class RotoTarget(val track: Track, val clip: Clip, val asset: MediaAsset)
+
+    var rotoMode by mutableStateOf(RotoBrushMode.ADD)
+    /** Brush diameter as a fraction of the frame width. */
+    var rotoBrush by mutableFloatStateOf(0.07f)
+    /** Edge feather as a fraction of the frame width. */
+    var rotoFeather by mutableFloatStateOf(0.006f)
+    /** Off while painting: full frame with the mask tinted; on: background removed. */
+    var rotoShowResult by mutableStateOf(false)
+    var rotoProgress by mutableStateOf<Float?>(null)
+        private set
+    /** Bumped whenever a mask image changes (overlay redraw). */
+    var rotoVersion by mutableIntStateOf(0)
+        private set
+    private var rotoJob: Job? = null
+    private val rotoMutex = Mutex()
+
+    /** The clip the roto tool works on: the selected clip if it is under the playhead, else the top visible one. */
+    fun rotoTarget(): RotoTarget? {
+        val p = project ?: return null
+        val pos = engine.position.value
+        val sel = selectedClipId?.let { id -> p.trackOfClip(id)?.let { t -> t to t.clips.first { it.id == id } } }
+        val pair = sel?.takeIf { (t, c) -> t.acceptsVisual && c.contains(pos) } ?: TimelineOps.topVisualClipAt(p, pos) ?: return null
+        val asset = p.asset(pair.second.assetId) ?: return null
+        if (asset.type == MediaType.AUDIO) return null
+        return RotoTarget(pair.first, pair.second, asset)
+    }
+
+    fun rotoSourceUs(t: RotoTarget): Long = t.clip.sourceTimeAt(engine.position.value).coerceAtLeast(0)
+
+    /** Mask resolution: longest side 640 px at the media's display aspect. */
+    private fun maskSize(a: MediaAsset): Pair<Int, Int> {
+        val w = a.displayWidth.takeIf { it > 0 } ?: 1920
+        val h = a.displayHeight.takeIf { it > 0 } ?: 1080
+        return if (w >= h) 640 to (640f * h / w).toInt().coerceAtLeast(16)
+        else (640f * w / h).toInt().coerceAtLeast(16) to 640
+    }
+
+    fun currentRotoMask(t: RotoTarget): AndroidBitmap? =
+        t.clip.roto?.keyAt(rotoSourceUs(t))?.let { app.roto.load(projectId, it.file) }
+
+    /** Is there a key exactly on this frame (vs. a mask held from an earlier key)? */
+    fun rotoKeyHere(t: RotoTarget): Boolean {
+        val r = t.clip.roto ?: return false
+        val src = rotoSourceUs(t)
+        val half = 500_000L / (project?.settings?.fps ?: 30)
+        return r.keys.any { kotlin.math.abs(it.sourceUs - src) <= half }
+    }
+
+    private fun editableTarget(): RotoTarget? {
+        val t = rotoTarget()
+        if (t == null) { toast = Toast("Move the playhead over a video or photo clip"); return null }
+        if (t.track.locked || t.clip.locked) { toast = Toast("Clip is locked"); return null }
+        return t
+    }
+
+    private suspend fun writeKey(t: RotoTarget, sourceUs: Long, mask: AndroidBitmap, label: String) {
+        val name = app.roto.save(projectId, mask)
+        val p = project ?: return
+        val clip = p.clip(t.clip.id) ?: return
+        val roto = (clip.roto ?: Roto()).withKey(RotoKey(sourceUs, name))
+        commit(label, TimelineOps.replaceClip(p, clip.copy(roto = roto)))
+        rotoVersion++
+        engine.refreshFrame()
+    }
+
+    /** Applies one brush/lasso stroke (points normalised to the media frame, 0..1). */
+    fun applyRotoStroke(points: List<Pair<Float, Float>>) {
+        val t = editableTarget() ?: return
+        if (points.isEmpty()) return
+        val src = rotoSourceUs(t)
+        val mode = rotoMode
+        val size = rotoBrush
+        val feather = rotoFeather
+        scope.launch {
+            rotoMutex.withLock {
+                val fresh = project?.clip(t.clip.id)?.let { t.copy(clip = it) } ?: return@withLock
+                val base = fresh.clip.roto?.keyAt(src)?.let { app.roto.load(projectId, it.file) }
+                val (w, h) = maskSize(t.asset)
+                val bmp = withContext(Dispatchers.Default) { RotoPainter.paint(base, w, h, points, mode, size, feather) }
+                writeKey(fresh, src, bmp, "Roto ${mode.label.lowercase()}")
+            }
+        }
+    }
+
+    /** Empties the mask on this frame (everything removed until you paint again). */
+    fun rotoClearFrame() {
+        val t = editableTarget() ?: return
+        val (w, h) = maskSize(t.asset)
+        scope.launch { rotoMutex.withLock { writeKey(t, rotoSourceUs(t), RotoPainter.empty(w, h), "Roto clear") } }
+    }
+
+    /** Refine Edge: smooths jagged brush edges into a clean, soft matte on this frame. */
+    fun rotoRefineEdge() {
+        val t = editableTarget() ?: return
+        val base = currentRotoMask(t) ?: run { toast = Toast("Paint a mask first"); return }
+        scope.launch {
+            rotoMutex.withLock {
+                val refined = withContext(Dispatchers.Default) { RotoPropagator.refineEdge(base, radius = 3, softness = 0.35f) }
+                writeKey(t, rotoSourceUs(t), refined, "Refine edge")
+            }
+        }
+    }
+
+    fun rotoToggleInvert() {
+        val t = editableTarget() ?: return
+        val r = t.clip.roto ?: run { toast = Toast("Paint a mask first"); return }
+        commit("Roto invert", TimelineOps.replaceClip(project ?: return, t.clip.copy(roto = r.copy(invert = !r.invert))))
+        engine.refreshFrame()
+    }
+
+    fun rotoToggleEnabled() {
+        val t = editableTarget() ?: return
+        val r = t.clip.roto ?: return
+        commit(if (r.enabled) "Roto off" else "Roto on", TimelineOps.replaceClip(project ?: return, t.clip.copy(roto = r.copy(enabled = !r.enabled))))
+        engine.refreshFrame()
+    }
+
+    fun rotoRemove() {
+        val t = editableTarget() ?: return
+        if (t.clip.roto == null) return
+        commit("Remove roto", TimelineOps.replaceClip(project ?: return, t.clip.copy(roto = null)))
+        rotoVersion++
+        engine.refreshFrame()
+    }
+
+    /** Moves the playhead to the previous/next roto key of the target clip. */
+    fun rotoJumpKey(forward: Boolean) {
+        val t = rotoTarget() ?: return
+        val keys = t.clip.roto?.keys ?: return
+        val src = rotoSourceUs(t)
+        val k = if (forward) keys.firstOrNull { it.sourceUs > src + 1 } else keys.lastOrNull { it.sourceUs < src - 1 }
+        k ?: return
+        engine.pause()
+        engine.seekTo(t.clip.startUs + t.clip.sourceToTimeline(k.sourceUs - t.clip.sourceInUs))
+    }
+
+    /**
+     * Frame propagation: tracks the subject from this frame forward (until the next key
+     * or the clip end) and writes a moved mask for every frame.
+     */
+    fun rotoPropagate() {
+        val t = editableTarget() ?: return
+        if (t.asset.type != MediaType.VIDEO) { toast = Toast("Photos use one mask for the whole clip"); return }
+        val base = currentRotoMask(t) ?: run { toast = Toast("Paint a mask on this frame first"); return }
+        val p = project ?: return
+        val src0 = rotoSourceUs(t)
+        val step = 1_000_000L / p.settings.fps
+        val nextKey = t.clip.roto?.keys?.firstOrNull { it.sourceUs > src0 + step / 2 }?.sourceUs
+        val end = (nextKey?.minus(step) ?: (t.clip.sourceOutUs - 1)).coerceAtMost(t.asset.durationUs - 1)
+        if (end <= src0) { toast = Toast("Nothing to propagate after this frame"); return }
+        engine.pause()
+        rotoJob?.cancel()
+        rotoJob = scope.launch {
+            rotoProgress = 0f
+            val job = coroutineContext[Job]
+            val results = withContext(Dispatchers.Default) {
+                RotoPropagator.propagate(
+                    app, t.asset, base, src0, end, step,
+                    isCancelled = { job?.isActive == false },
+                    onProgress = { f -> rotoProgress = f * 0.9f },
+                )
+            }
+            if (results.isNotEmpty()) {
+                val names = withContext(Dispatchers.IO) { results.map { app.roto.saveBlocking(projectId, it.mask) } }
+                val cur = project
+                val clip = cur?.clip(t.clip.id)
+                if (cur != null && clip != null) {
+                    val newKeys = results.mapIndexed { i, r -> RotoKey(r.sourceUs, names[i]) }
+                    val lastUs = results.last().sourceUs
+                    val kept = (clip.roto?.keys ?: emptyList()).filterNot { it.sourceUs > src0 && it.sourceUs <= lastUs }
+                    val roto = (clip.roto ?: Roto()).copy(keys = (kept + newKeys).sortedBy { it.sourceUs })
+                    commit("Propagate roto", TimelineOps.replaceClip(cur, clip.copy(roto = roto)))
+                    rotoVersion++
+                    engine.refreshFrame()
+                    toast = Toast("Mask tracked across ${results.size} frames")
+                }
+            }
+            rotoProgress = null
+        }
+    }
+
+    fun rotoCancel() {
+        rotoJob?.cancel()
+        rotoProgress = null
+        toast = Toast("Propagation cancelled")
     }
 }
