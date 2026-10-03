@@ -3,7 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      Offline by design: AMIRI CUT never requests network access.
+      Offline by design: Amiri Cut never requests network access.
       The "remove" rules guarantee that no library can merge these permissions in.
     -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />

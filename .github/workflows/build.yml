@@ -72,6 +72,6 @@ jobs:
           TAG="v${VERSION}-build${{ github.run_number }}"
           cp app/build/outputs/apk/release/app-release.apk "AmiriCut-${VERSION}.apk"
           gh release create "$TAG" "AmiriCut-${VERSION}.apk" \
-            --title "AMIRI CUT ${VERSION} (build ${{ github.run_number }})" \
+            --title "Amiri Cut ${VERSION} (build ${{ github.run_number }})" \
             --notes "Automatic build from ${{ github.sha }}. Install AmiriCut-${VERSION}.apk on your phone." \
             --latest

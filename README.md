@@ -1,4 +1,4 @@
-# AMIRI CUT
+# Amiri Cut
 
 A native, **100 % offline**, device-powered video editor for Android — built for the realme GT3 (Android 16), minimal and professional: *Less features — more control.*
 
@@ -71,7 +71,7 @@ Open the folder → let Gradle sync → **Run ▶** on the device.
 ```
 
 ## How to Run
-Install the APK, open **AMIRI CUT**, tap **New Project → Import media**. Grant nothing else — the app needs no runtime permissions because the system file picker grants access per file.
+Install the APK, open **Amiri Cut**, tap **New Project → Import media**. Grant nothing else — the app needs no runtime permissions because the system file picker grants access per file.
 
 ## How to Generate APK
 `./gradlew assembleDebug` → debug APK (package `com.amiri.cut.debug`, can be installed side-by-side with release).

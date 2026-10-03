@@ -7,5 +7,5 @@
         <item name="android:windowLightStatusBar">false</item>
     </style>
     <color name="amiri_bg">#0A0A0B</color>
-    <color name="amiri_icon_bg">#0B0C0E</color>
+    <color name="amiri_icon_bg">#FFFFFF</color>
 </resources>

@@ -36,6 +36,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.amiri.cut.AmiriCutApp
+import com.amiri.cut.R
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import com.amiri.cut.storage.AccentChoice
 import com.amiri.cut.storage.CacheManager
 import com.amiri.cut.storage.PerformanceMode
@@ -151,7 +157,7 @@ fun SettingsScreen(app: AmiriCutApp, onBack: () -> Unit) {
                             )
                             Gap(h = 4)
                             Text(
-                                "AMIRI CUT has no internet permission, no accounts, no analytics and no cloud. " +
+                                "Amiri Cut has no internet permission, no accounts, no analytics and no cloud. " +
                                     "Projects and caches live only in this app's private storage; your media is read in place.",
                                 color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall,
                             )
@@ -159,8 +165,13 @@ fun SettingsScreen(app: AmiriCutApp, onBack: () -> Unit) {
                     }
                 }
 
+                Image(
+                    painterResource(R.drawable.amiri_logo_full), "Amiri Cut logo",
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)),
+                )
                 Text(
-                    "AMIRI CUT · ${runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""}",
+                    "Amiri Cut · ${runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""}",
                     color = Amiri.TextTertiary, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(bottom = 24.dp),
                 )

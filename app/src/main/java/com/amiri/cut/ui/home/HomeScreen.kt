@@ -63,6 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amiri.cut.AmiriCutApp
+import com.amiri.cut.R
+import androidx.compose.ui.res.painterResource
 import com.amiri.cut.core.model.ProjectSummary
 import com.amiri.cut.core.time.FrameTime
 import com.amiri.cut.ui.common.AmbientBackground
@@ -105,7 +107,7 @@ fun HomeScreen(
                 Toast.makeText(context, "Restored “${p.name}”", Toast.LENGTH_SHORT).show()
                 refresh++
             }.onFailure {
-                Toast.makeText(context, "Not a valid AMIRI CUT backup", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Not a valid Amiri Cut backup", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -128,8 +130,12 @@ fun HomeScreen(
         ) {
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("AMIRI CUT", color = Amiri.TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
+                    Image(
+                        painterResource(R.drawable.amiri_logo_mark), "Amiri Cut logo",
+                        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)),
+                    )
+                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                        Text("Amiri Cut", color = Amiri.TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
                         Text("Offline · Device-powered editor", color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall)
                     }
                     IconAction(Icons.Outlined.Settings, "Settings", onClick = onSettings)
@@ -190,7 +196,7 @@ fun HomeScreen(
     recoverTarget?.let { p ->
         ConfirmDialog(
             title = "Recover project?",
-            message = "AMIRI CUT closed unexpectedly while “${p.name}” was open. An autosave newer than the last save was found.",
+            message = "Amiri Cut closed unexpectedly while “${p.name}” was open. An autosave newer than the last save was found.",
             confirm = "Recover", dismiss = "Discard autosave",
             onDismiss = { recoverTarget = null },
             onDismissAction = {

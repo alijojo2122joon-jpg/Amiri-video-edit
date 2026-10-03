@@ -185,7 +185,7 @@ class ProjectRepository(context: Context) {
                 zip.closeEntry()
             }
         }
-        val src = project ?: error("Not an AMIRI CUT backup")
+        val src = project ?: error("Not an Amiri Cut backup")
         val now = System.currentTimeMillis()
         val p = src.copy(id = newId(), modifiedAt = now)
         writeAtomic(projectFile(p.id), json.encodeToString(Project.serializer(), p).toByteArray())
