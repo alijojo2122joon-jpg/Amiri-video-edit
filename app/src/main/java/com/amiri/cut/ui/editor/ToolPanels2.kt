@@ -873,14 +873,14 @@ internal fun ShapePanel(c: EditorController) {
     val PATH = com.amiri.cut.core.model.ShapeKind.PATH
     Column {
         if (c.shapePen) {
-            val n = c.penPoints.size / 6
+            val n = c.shapePts.size / 6
             Text(
                 if (c.penFreehand) "Freehand: draw the line with one finger. Two fingers zoom/pan."
                 else "Pen: tap = corner point · tap & drag = curve · tap the yellow first point to close. Two fingers zoom/pan.",
                 color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
             )
             Row(Modifier.horizontalScroll(rememberScrollState())) {
-                ToggleChip("Freehand", c.penFreehand) { c.penFreehand = !c.penFreehand; c.penPoints.clear() }
+                ToggleChip("Freehand", c.penFreehand) { c.penFreehand = !c.penFreehand; c.shapePts.clear() }
                 if (!c.penFreehand) {
                     PanelAction(Icons.Outlined.Check, "Finish line ($n)") { c.finishPen(false) }
                     PanelAction(Icons.Outlined.CropFree, "Close shape") { c.finishPen(true) }

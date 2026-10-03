@@ -1242,7 +1242,7 @@ class EditorController(
     // ═════════════════════════ Pen tool (path shapes) ═════════════════════════
 
     /** Vertices being drawn (6 floats each: x, y, inX, inY, outX, outY; canvas-normalised). */
-    val penPoints = androidx.compose.runtime.mutableStateListOf<Float>()
+    val shapePts = androidx.compose.runtime.mutableStateListOf<Float>()
     var shapePen by mutableStateOf(false)
     var penFreehand by mutableStateOf(false)
     /** Edit the vertices of the selected pen path on the preview. */
@@ -1250,25 +1250,25 @@ class EditorController(
 
     fun startPen() {
         engine.pause()
-        penPoints.clear()
+        shapePts.clear()
         shapePen = true
         pathEdit = false
         toast = Toast(if (penFreehand) "Draw with your finger" else "Tap to add points · drag to curve · tap the first point to close")
     }
 
-    fun cancelPen() { shapePen = false; penPoints.clear() }
+    fun cancelPen() { shapePen = false; shapePts.clear() }
 
-    fun penUndo() { repeat(6) { if (penPoints.isNotEmpty()) penPoints.removeAt(penPoints.lastIndex) } }
+    fun penUndo() { repeat(6) { if (shapePts.isNotEmpty()) shapePts.removeAt(shapePts.lastIndex) } }
 
     fun finishPen(closed: Boolean) {
-        val n = penPoints.size / 6
+        val n = shapePts.size / 6
         if (n < 2) { toast = Toast("Add at least 2 points"); return }
         val p = project ?: return
-        val (np, clip) = TimelineOps.addPathShape(p, engine.position.value, penPoints.toList(), closed && n >= 3)
+        val (np, clip) = TimelineOps.addPathShape(p, engine.position.value, shapePts.toList(), closed && n >= 3)
         commit(if (closed) "Pen shape" else "Pen line", np)
         selectedClipId = clip.id
         shapePen = false
-        penPoints.clear()
+        shapePts.clear()
     }
 
     /** Moves vertex [index] of a pen path ([part] 0 = point, 1 = in handle, 2 = out handle). */

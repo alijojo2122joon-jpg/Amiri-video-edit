@@ -339,23 +339,23 @@ private fun ShapePenOverlay(c: EditorController) {
                     }
                     if (!multi && free.size >= 2) {
                         val pts = smoothPath(free.map { it.x / w to it.y / h })
-                        c.penPoints.clear(); c.penPoints.addAll(pts)
+                        c.shapePts.clear(); c.shapePts.addAll(pts)
                         c.finishPen(false)
                     }
                     free.clear()
                     return@awaitEachGesture
                 }
                 // Click-to-add pen.
-                val n = c.penPoints.size / 6
+                val n = c.shapePts.size / 6
                 if (n >= 3) {
-                    val first = Offset(c.penPoints[0] * w, c.penPoints[1] * h)
+                    val first = Offset(c.shapePts[0] * w, c.shapePts[1] * h)
                     if ((down.position - first).getDistance() < touch) {
                         if (waitForUpOrCancellation() != null) c.finishPen(true)
                         return@awaitEachGesture
                     }
                 }
-                val base = c.penPoints.size
-                c.penPoints.addAll(listOf(down.position.x / w, down.position.y / h, 0f, 0f, 0f, 0f))
+                val base = c.shapePts.size
+                c.shapePts.addAll(listOf(down.position.x / w, down.position.y / h, 0f, 0f, 0f, 0f))
                 while (true) {
                     val ev = awaitPointerEvent()
                     if (ev.changes.count { it.pressed } >= 2) multi = true
@@ -364,20 +364,20 @@ private fun ShapePenOverlay(c: EditorController) {
                     if (!multi && (ch.position - down.position).getDistance() > viewConfiguration.touchSlop) {
                         val ox = (ch.position.x - down.position.x) / w
                         val oy = (ch.position.y - down.position.y) / h
-                        if (c.penPoints.size >= base + 6) {
-                            c.penPoints[base + 4] = ox; c.penPoints[base + 5] = oy
-                            c.penPoints[base + 2] = -ox; c.penPoints[base + 3] = -oy
+                        if (c.shapePts.size >= base + 6) {
+                            c.shapePts[base + 4] = ox; c.shapePts[base + 5] = oy
+                            c.shapePts[base + 2] = -ox; c.shapePts[base + 3] = -oy
                         }
                     }
                     ch.consume()
                 }
-                if (multi) { repeat(6) { if (c.penPoints.size > base) c.penPoints.removeAt(c.penPoints.lastIndex) } }
+                if (multi) { repeat(6) { if (c.shapePts.size > base) c.shapePts.removeAt(c.shapePts.lastIndex) } }
             }
         },
     ) {
         val w = size.width; val h = size.height
         val z = c.viewZoom
-        val pts = c.penPoints.toList()
+        val pts = c.shapePts.toList()
         val n = pts.size / 6
         if (n >= 1) {
             val path = Path()
