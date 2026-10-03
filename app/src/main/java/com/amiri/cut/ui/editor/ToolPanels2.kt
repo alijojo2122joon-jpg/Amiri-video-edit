@@ -103,6 +103,7 @@ import com.amiri.cut.core.model.MaskShape
 import com.amiri.cut.core.model.MediaType
 import com.amiri.cut.core.model.SpeedRamp
 import com.amiri.cut.core.model.StabMode
+import com.amiri.cut.media.MotionTracker.Mode as TMode
 import com.amiri.cut.core.time.FrameTime
 import com.amiri.cut.render.CurveBuilder
 import com.amiri.cut.ui.common.ChoiceChips
@@ -470,9 +471,8 @@ internal fun MaskPanel(c: EditorController) {
         }
         if (c.project?.asset(clip.assetId)?.type == MediaType.VIDEO) {
             SectionTitle("Track mask")
-            val M = com.amiri.cut.media.MotionTracker.Mode
-            ChoiceChips(listOf(M.POSITION, M.SIMILARITY), if (c.trackMode == M.POSITION) M.POSITION else M.SIMILARITY, {
-                if (it == M.POSITION) "Position" else "Position + scale + rotation"
+                    ChoiceChips(listOf(TMode.POSITION, TMode.SIMILARITY), if (c.trackMode == TMode.POSITION) TMode.POSITION else TMode.SIMILARITY, {
+                if (it == TMode.POSITION) "Position" else "Position + scale + rotation"
             }) { c.trackMode = it }
             Row(Modifier.horizontalScroll(rememberScrollState())) {
                 PanelAction(Icons.Outlined.ChevronLeft, "◀ Track") { c.trackMask(sel.id, -1) }
@@ -497,21 +497,20 @@ internal fun TrackPanel(c: EditorController) {
     val p = c.project ?: return
     val asset = p.asset(clip.assetId)
     val isVideo = asset?.type == MediaType.VIDEO
-    val M = com.amiri.cut.media.MotionTracker.Mode
     Column {
         if (isVideo) {
             SectionTitle("Motion tracking")
-            ChoiceChips(M.entries.toList(), c.trackMode, {
-                when (it) { M.POSITION -> "Position"; M.SIMILARITY -> "Position + scale + rotation"; M.TWO_POINT -> "2 points" }
+            ChoiceChips(TMode.entries.toList(), c.trackMode, {
+                when (it) { TMode.POSITION -> "Position"; TMode.SIMILARITY -> "Position + scale + rotation"; TMode.TWO_POINT -> "2 points" }
             }) { m ->
                 c.trackMode = m
-                c.trackRegions = if (m == M.TWO_POINT && c.trackRegions.size < 2) c.trackRegions.take(1) + android.graphics.RectF(0.62f, 0.42f, 0.74f, 0.58f)
-                else if (m != M.TWO_POINT) c.trackRegions.take(1) else c.trackRegions
+                c.trackRegions = if (m == TMode.TWO_POINT && c.trackRegions.size < 2) c.trackRegions.take(1) + android.graphics.RectF(0.62f, 0.42f, 0.74f, 0.58f)
+                else if (m != TMode.TWO_POINT) c.trackRegions.take(1) else c.trackRegions
             }
             Hint(when (c.trackMode) {
-                M.POSITION -> "Put the box on a detailed spot (corner, logo, eye). Fast and very stable; corrects drift against the first frame."
-                M.SIMILARITY -> "Make the box cover the whole object (face, sign, phone screen). Follows its size and rotation too."
-                M.TWO_POINT -> "Two boxes on two far-apart details of the object; their line gives scale and rotation."
+                TMode.POSITION -> "Put the box on a detailed spot (corner, logo, eye). Fast and very stable; corrects drift against the first frame."
+                TMode.SIMILARITY -> "Make the box cover the whole object (face, sign, phone screen). Follows its size and rotation too."
+                TMode.TWO_POINT -> "Two boxes on two far-apart details of the object; their line gives scale and rotation."
             })
             Row(Modifier.horizontalScroll(rememberScrollState())) {
                 PanelAction(Icons.Outlined.ChevronLeft, "◀ Track back") { c.track(-1) }
