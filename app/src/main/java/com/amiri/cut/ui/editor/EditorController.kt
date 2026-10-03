@@ -1094,7 +1094,7 @@ class EditorController(
             AttachKind.TEXT -> TimelineOps.addText(p, t, "Text", dur)
             AttachKind.SHAPE -> TimelineOps.addShape(p, t, com.amiri.cut.core.model.ShapeKind.ELLIPSE, dur).let { (np, c) ->
                 val nc = c.copy(shape = c.shape?.copy(props = c.shape.props.with("w", com.amiri.cut.core.model.Param(0.18f)).with("h", com.amiri.cut.core.model.Param(0.18f))))
-                TimelineOps.updateClip(np, c.id) { nc } to nc
+                (TimelineOps.updateClip(np, c.id) { nc } ?: np) to nc
             }
             AttachKind.OVERLAY -> TimelineOps.placeOverlay(p, overlay ?: return, t, dur) ?: return
         }
@@ -1105,7 +1105,7 @@ class EditorController(
                 transform = c.transform.with("px", com.amiri.cut.core.model.Param(px)).with("py", com.amiri.cut.core.model.Param(py)),
                 follow = com.amiri.cut.core.model.Follow(trackedClipId, t, true, td.scaleRot, td.scaleRot),
             )
-        }
+        } ?: np
         commit("Attach ${kind.name.lowercase()} to track", np)
         selectedClipId = id
         attachPrompt = null
