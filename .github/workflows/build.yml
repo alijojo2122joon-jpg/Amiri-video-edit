@@ -89,3 +89,28 @@ jobs:
             --title "Amiri Cut ${VERSION} (build ${{ github.run_number }})" \
             --notes "Automatic build from ${{ github.sha }}. Install AmiriCut-${VERSION}.apk on your phone." \
             --latest
+
+  device-smoke:
+    # Runs the real release APK on an emulator and exports a test project end to end.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: AmiriCut-release-apk
+          path: apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash .github/scripts/smoke.sh

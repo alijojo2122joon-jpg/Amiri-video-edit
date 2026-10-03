@@ -53,6 +53,7 @@ import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.Category
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Animation
 import androidx.compose.material.icons.outlined.CenterFocusWeak
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -148,7 +149,8 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
     // Roto needs a big canvas: hide the timeline automatically (toggle with ⤢ in the transport bar).
     LaunchedEffect(c.activeTool) {
         c.expandedPreview = c.activeTool == EditorTool.ROTO
-        if (c.activeTool != EditorTool.SHAPE) { c.cancelPen(); c.pathEdit = false }
+        if (c.activeTool != EditorTool.SHAPE && c.activeTool != EditorTool.EFFECTS) c.cancelPen()
+        if (c.activeTool != EditorTool.SHAPE) c.pathEdit = false
     }
     val expanded = c.expandedPreview
     if (landscape) {
@@ -159,6 +161,7 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
                 TransportBar(c)
             }
             Column(Modifier.weight(0.45f).fillMaxHeight()) {
+                if (!expanded) LayerFxStrip(c)
                 if (!expanded) TimelineView(c, Modifier.weight(1f).fillMaxWidth()) else Box(Modifier.weight(1f))
                 ToolArea(c)
             }
@@ -168,6 +171,7 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
             TopBar(c, onBack)
             PreviewPane(c, Modifier.weight(1f).fillMaxWidth())
             TransportBar(c)
+            if (!expanded) LayerFxStrip(c)
             if (!expanded) TimelineView(c, Modifier.fillMaxWidth().height(250.dp))
             ToolArea(c)
         }
@@ -358,6 +362,48 @@ private fun ToastHost(c: EditorController, modifier: Modifier) {
             color = Amiri.TextPrimary, fontSize = 12.sp,
             modifier = Modifier.glass(RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
         )
+    }
+}
+
+/**
+ * The selected layer's effects (and roto / stabilization) as chips right above the
+ * timeline: tap the dot to switch one on/off, tap the name to edit it, ✕ to delete it.
+ */
+@Composable
+private fun LayerFxStrip(c: EditorController) {
+    val clip = c.selectedClip() ?: return
+    val items = ArrayList<Triple<String, Boolean, String>>() // key, enabled, label
+    clip.effects.forEach { e -> items += Triple("fx:" + e.id, e.enabled, com.amiri.cut.core.effects.EffectCatalog.spec(e.type)?.label ?: e.type) }
+    clip.roto?.takeIf { it.keys.isNotEmpty() }?.let { items += Triple("roto", it.enabled, "Roto") }
+    clip.stab?.let { items += Triple("stab", it.enabled, "Stabilize") }
+    if (clip.masks.isNotEmpty()) items += Triple("masks", true, "Masks ${clip.masks.size}")
+    if (items.isEmpty()) return
+    val accent = LocalAccent.current
+    Row(
+        Modifier.fillMaxWidth().background(Color(0xFF0D0D0F)).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("fx", color = Amiri.TextTertiary, fontSize = 11.sp)
+        items.forEach { (key, on, label) ->
+            Row(
+                Modifier.clip(RoundedCornerShape(50)).background(if (on) accent.copy(alpha = 0.16f) else Amiri.Surface)
+                    .padding(start = 4.dp, end = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(26.dp).clickable { c.toggleLayerItem(clip.id, key) }.padding(7.dp)
+                        .clip(CircleShape).background(if (on) accent else Amiri.TextTertiary.copy(alpha = 0.4f)),
+                )
+                Text(
+                    label, color = if (on) Amiri.TextPrimary else Amiri.TextTertiary, fontSize = 12.sp,
+                    modifier = Modifier.clickable { c.openLayerItem(clip.id, key) }.padding(horizontal = 4.dp, vertical = 6.dp),
+                )
+                if (key != "masks") Icon(
+                    Icons.Outlined.Close, "Delete $label", tint = Amiri.TextSecondary,
+                    modifier = Modifier.size(26.dp).clickable { c.deleteLayerItem(clip.id, key) }.padding(6.dp),
+                )
+            }
+        }
     }
 }
 

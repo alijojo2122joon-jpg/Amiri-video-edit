@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Mic
@@ -881,6 +882,7 @@ internal fun EffectsPanel(c: EditorController) {
     var cat by remember { mutableStateOf(EffectCategory.LIGHT) }
     val clip = visualSelected(c)
     Column {
+        if (c.shapePen) { PenControls(c); return@Column }
         Row {
             PanelAction(Icons.Outlined.Layers, "Adjustment layer") { c.addAdjustmentLayer() }
         }
@@ -928,6 +930,13 @@ internal fun EffectsPanel(c: EditorController) {
             else ChoiceChips(luts, sel.opts["file"] ?: "", { it.removeSuffix(".cube") }) { n -> c.updateEffect(sel.id, "LUT") { it.copy(opts = it.opts + ("file" to n)) } }
         }
         if (sel.type == "color") { Hint("Edit this grade in the Color tool."); return@Column }
+        if (sel.type == "saber") {
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                PanelAction(Icons.Outlined.Draw, if (sel.opts["path"] != null) "Redraw path" else "✎ Draw path") { c.startSaberPen(clip.id, sel.id) }
+                PanelAction(Icons.Outlined.AutoAwesome, "New saber line") { c.startSaberLine() }
+            }
+            Hint("Draw the beam by hand (tap points / curves, or Freehand) on the preview. Animate it with Start / End offset keyframes.")
+        }
         KeyframeBar(c, clip)
         val t = EditorController.PTarget.Fx(clip.id, sel.id)
         val colorIds = spec.colors.flatMap { listOf(it.first, it.second, it.third) }.toSet()
@@ -979,30 +988,36 @@ internal fun AudioPanel(c: EditorController) {
 // ═══════════════════════════════ Shapes ═══════════════════════════════
 
 @Composable
+internal fun PenControls(c: EditorController) {
+    val n = c.shapePts.size / 6
+    Column {
+        Text(
+            (if (c.penSaber != null) "Saber path · " else if (c.penMakeSaber) "Saber line · " else "") +
+                (if (c.penFreehand) "Freehand: draw with one finger. Two fingers zoom/pan."
+                else "Tap = corner point · tap & drag = curve · tap the yellow first point to close. Two fingers zoom/pan."),
+            color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            ToggleChip("Freehand", c.penFreehand) { c.penFreehand = !c.penFreehand; c.shapePts.clear() }
+            if (!c.penFreehand) {
+                PanelAction(Icons.Outlined.Check, "Finish line ($n)") { c.finishPen(false) }
+                PanelAction(Icons.Outlined.CropFree, "Close shape") { c.finishPen(true) }
+                PanelAction(Icons.AutoMirrored.Outlined.Undo, "Undo point") { c.penUndo() }
+            }
+            PanelAction(Icons.Outlined.DeleteOutline, "Cancel") { c.cancelPen() }
+        }
+    }
+}
+
+@Composable
 internal fun ShapePanel(c: EditorController) {
     val clip = c.selectedClip()?.takeIf { it.kind == ClipKind.SHAPE }
     val PATH = com.amiri.cut.core.model.ShapeKind.PATH
     Column {
-        if (c.shapePen) {
-            val n = c.shapePts.size / 6
-            Text(
-                if (c.penFreehand) "Freehand: draw the line with one finger. Two fingers zoom/pan."
-                else "Pen: tap = corner point · tap & drag = curve · tap the yellow first point to close. Two fingers zoom/pan.",
-                color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                ToggleChip("Freehand", c.penFreehand) { c.penFreehand = !c.penFreehand; c.shapePts.clear() }
-                if (!c.penFreehand) {
-                    PanelAction(Icons.Outlined.Check, "Finish line ($n)") { c.finishPen(false) }
-                    PanelAction(Icons.Outlined.CropFree, "Close shape") { c.finishPen(true) }
-                    PanelAction(Icons.AutoMirrored.Outlined.Undo, "Undo point") { c.penUndo() }
-                }
-                PanelAction(Icons.Outlined.DeleteOutline, "Cancel") { c.cancelPen() }
-            }
-            return@Column
-        }
+        if (c.shapePen) { PenControls(c); return@Column }
         Row(Modifier.horizontalScroll(rememberScrollState())) {
             PanelAction(Icons.Outlined.Draw, "+ Pen / line") { c.addShape(PATH) }
+            PanelAction(Icons.Outlined.AutoAwesome, "+ Saber line") { c.startSaberLine() }
             com.amiri.cut.core.model.ShapeKind.entries.filter { it != PATH }.forEach { k ->
                 PanelAction(
                     when (k) {

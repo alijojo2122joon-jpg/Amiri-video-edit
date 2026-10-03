@@ -173,7 +173,7 @@ fun PreviewPane(c: EditorController, modifier: Modifier = Modifier) {
             when {
                 picking != null -> EyedropperOverlay(c, p, pos)
                 c.activeTool == EditorTool.ROTO -> c.rotoTarget()?.let { RotoOverlay(c, p, it, pos) } ?: TapToPlay(c)
-                c.activeTool == EditorTool.SHAPE && c.shapePen -> ShapePenOverlay(c)
+                (c.activeTool == EditorTool.SHAPE || c.activeTool == EditorTool.EFFECTS) && c.shapePen -> ShapePenOverlay(c)
                 c.activeTool == EditorTool.SHAPE && c.pathEdit && c.selectedClip()?.shape?.kind == com.amiri.cut.core.model.ShapeKind.PATH -> PathEditOverlay(c, p, pos)
                 c.activeTool == EditorTool.TRANSFORM || c.activeTool == EditorTool.TEXT || c.activeTool == EditorTool.SHAPE || c.activeTool == EditorTool.KEYS -> TransformGizmo(c, p, pos)
                 c.activeTool == EditorTool.MASK -> MaskGizmo(c, p, pos)

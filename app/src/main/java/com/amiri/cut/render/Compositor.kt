@@ -661,7 +661,10 @@ class Compositor(private val text: TextRenderer) {
      * outline, its masks, or the straight line parameters.
      */
     private fun saberCore(e: Effect, clip: Clip, local: Long, w: Int, h: Int, cw: Int, ch: Int, v: (String) -> Float): Fbo? {
-        val path: Path = if (e.opts["source"] == "Line") {
+        val drawn = if (e.opts["source"] == "Drawn path") e.opts["path"]?.split(",")?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size >= 12 } else null
+        val path: Path = if (drawn != null) {
+            ShapeRenderer.vertexPath(drawn, e.opts["closed"] == "true", w.toFloat(), h.toFloat())
+        } else if (e.opts["source"] == "Line") {
             Path().apply { moveTo(v("x1") * w, v("y1") * h); lineTo(v("x2") * w, v("y2") * h) }
         } else {
             val spec = clip.shape
@@ -699,7 +702,7 @@ class Compositor(private val text: TextRenderer) {
         val trimmed = ShapeRenderer.trim(path, v("start"), v("end"), v("offset"))
         val stroke = max(1.2f, v("core") * min(w, h))
         val key = "${clip.id}|${e.id}|$w|$h|$stroke|" + android.graphics.PathMeasure(trimmed, false).length.toString() +
-            "|${v("start")}|${v("end")}|${v("offset")}|${v("x1")},${v("y1")},${v("x2")},${v("y2")}|${clip.shape?.path?.hashCode()}|${clip.masks.hashCode()}"
+            "|${v("start")}|${v("end")}|${v("offset")}|${v("x1")},${v("y1")},${v("x2")},${v("y2")}|${clip.shape?.path?.hashCode()}|${clip.masks.hashCode()}|${e.opts["path"]?.hashCode()}|${e.opts["source"]}"
         val c = saberTex.getOrPut(clip.id + e.id) { Cached(0, null) }
         if (c.key != key) {
             val sc = min(1f, 2048f / max(w, h))

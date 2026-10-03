@@ -12,6 +12,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
@@ -35,11 +40,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val app = application as AmiriCutApp
+        if (intent?.getBooleanExtra("amiri_selftest", false) == true) com.amiri.cut.export.SelfTest.run(this)
         setContent {
             val settings = app.settings
             LaunchedEffect(settings.haptics) { Haptics.enabled = settings.haptics }
             AmiriTheme(accent = Color(settings.accent.argb)) {
                 AppNavigation(app)
+                CrashDialog(app)
             }
         }
     }
@@ -84,4 +91,33 @@ private fun AppNavigation(app: AmiriCutApp) {
             )
         }
     }
+}
+
+@Composable
+private fun CrashDialog(app: AmiriCutApp) {
+    var report by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(CrashLog.pending(app)) }
+    val text = report ?: return
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { CrashLog.markSeen(app); report = null },
+        title = { androidx.compose.material3.Text("Amiri Cut closed unexpectedly") },
+        text = {
+            androidx.compose.foundation.layout.Column {
+                androidx.compose.material3.Text("Sorry! This report stays on your phone. Copy it and send it if you want the problem fixed.", fontSize = androidx.compose.ui.unit.TextUnit(12f, androidx.compose.ui.unit.TextUnitType.Sp))
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    androidx.compose.material3.Text(
+                        text, fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp),
+                        modifier = androidx.compose.ui.Modifier.padding(top = androidx.compose.ui.unit.Dp(8f))
+                            .heightIn(max = androidx.compose.ui.unit.Dp(320f)).verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(text)) }) { androidx.compose.material3.Text("Copy") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { CrashLog.markSeen(app); report = null }) { androidx.compose.material3.Text("Close") }
+        },
+    )
 }

@@ -1069,6 +1069,47 @@ class EditorController(
 
     fun trackForward() = track(1)
 
+    // ═════════════════════════ Layer effect strip ═════════════════════════
+
+    fun toggleLayerItem(clipId: String, key: String) {
+        val p = project ?: return
+        val np = TimelineOps.updateClip(p, clipId) { c ->
+            when {
+                key.startsWith("fx:") -> c.copy(effects = c.effects.map { if (it.id == key.removePrefix("fx:")) it.copy(enabled = !it.enabled) else it })
+                key == "roto" -> c.copy(roto = c.roto?.copy(enabled = !c.roto.enabled))
+                key == "stab" -> c.copy(stab = c.stab?.copy(enabled = !c.stab.enabled))
+                else -> c
+            }
+        } ?: return
+        commit("Toggle effect", np)
+    }
+
+    fun deleteLayerItem(clipId: String, key: String) {
+        val p = project ?: return
+        val np = TimelineOps.updateClip(p, clipId) { c ->
+            when {
+                key.startsWith("fx:") -> c.copy(effects = c.effects.filterNot { it.id == key.removePrefix("fx:") })
+                key == "roto" -> c.copy(roto = null)
+                key == "stab" -> c.copy(stab = null)
+                else -> c
+            }
+        } ?: return
+        commit("Delete effect", np)
+    }
+
+    fun openLayerItem(clipId: String, key: String) {
+        selectedClipId = clipId
+        when {
+            key.startsWith("fx:") -> {
+                selectedEffectId = key.removePrefix("fx:")
+                activeTool = if (project?.clip(clipId)?.effects?.firstOrNull { it.id == selectedEffectId }?.type == "color") EditorTool.COLOR else EditorTool.EFFECTS
+            }
+            key == "roto" -> activeTool = EditorTool.ROTO
+            key == "stab" -> activeTool = EditorTool.STABILIZE
+            key == "masks" -> activeTool = EditorTool.MASK
+        }
+    }
+
     /** Set after a successful track: asks what to attach to the tracked point (clip id). */
     var attachPrompt by mutableStateOf<String?>(null)
 
@@ -1280,7 +1321,7 @@ class EditorController(
         }
         val e = com.amiri.cut.core.model.Effect(com.amiri.cut.core.model.newId(), type, props = props, opts = defaults)
         updateSelected("Add ${spec.label}") { c ->
-            if (c.kind == com.amiri.cut.core.model.ClipKind.MEDIA || c.kind == com.amiri.cut.core.model.ClipKind.ADJUSTMENT || c.kind == com.amiri.cut.core.model.ClipKind.TEXT) c.copy(effects = c.effects + e) else c
+            c.copy(effects = c.effects + e)
         }
         selectedEffectId = e.id
         return e.id
@@ -1436,7 +1477,49 @@ class EditorController(
         toast = Toast(if (penFreehand) "Draw with your finger" else "Tap to add points · drag to curve · tap the first point to close")
     }
 
-    fun cancelPen() { shapePen = false; shapePts.clear() }
+    fun cancelPen() { shapePen = false; shapePts.clear(); penSaber = null; penMakeSaber = false }
+
+    /** When set, the pen draws a Saber path for (clip id, effect id) instead of a shape. */
+    var penSaber by mutableStateOf<Pair<String, String>?>(null)
+    /** When set, the pen shape gets a Saber effect (outline hidden) — a "saber line". */
+    var penMakeSaber by mutableStateOf(false)
+
+    fun startSaberPen(clipId: String, effectId: String) {
+        startPen()
+        penSaber = clipId to effectId
+    }
+
+    fun startSaberLine() {
+        startPen()
+        penMakeSaber = true
+    }
+
+    /** Stores the drawn pen path (canvas space) into a Saber effect, in the layer's own space. */
+    private fun finishSaberPath(clipId: String, effectId: String, closed: Boolean) {
+        val p = project ?: return
+        val clip = p.clip(clipId) ?: return
+        val t = engine.position.value.coerceIn(clip.startUs, clip.endUs - 1)
+        val cw = p.settings.width; val ch = p.settings.height
+        val (bw, bh) = com.amiri.cut.render.LayerMath.baseSize(p, clip, t, cw, ch, textMeasurer) ?: return
+        val inv = com.amiri.cut.render.LayerMath.inverseOf(p, clip, t, bw, bh, cw, ch)
+        fun toL(x: Float, y: Float) = com.amiri.cut.render.Affine.toLayer(inv, x * cw, y * ch, ch)
+        val src = shapePts.toList()
+        val out = ArrayList<Float>(src.size)
+        for (i in 0 until src.size / 6) {
+            val b = i * 6
+            val x = src[b]; val y = src[b + 1]
+            val l = toL(x, y)
+            val li = toL(x + src[b + 2], y + src[b + 3]); val lo = toL(x + src[b + 4], y + src[b + 5])
+            out += listOf(l[0], l[1], li[0] - l[0], li[1] - l[1], lo[0] - l[0], lo[1] - l[1])
+        }
+        val enc = out.joinToString(",") { "%.5f".format(java.util.Locale.US, it) }
+        commit("Saber path", TimelineOps.updateClip(p, clipId) { c ->
+            c.copy(effects = c.effects.map {
+                if (it.id == effectId) it.copy(opts = it.opts + ("path" to enc) + ("closed" to closed.toString()) + ("source" to "Drawn path")) else it
+            })
+        } ?: return)
+        selectedEffectId = effectId
+    }
 
     fun penUndo() { repeat(6) { if (shapePts.isNotEmpty()) shapePts.removeAt(shapePts.lastIndex) } }
 
@@ -1444,11 +1527,29 @@ class EditorController(
         val n = shapePts.size / 6
         if (n < 2) { toast = Toast("Add at least 2 points"); return }
         val p = project ?: return
-        val (np, clip) = TimelineOps.addPathShape(p, engine.position.value, shapePts.toList(), closed && n >= 3)
-        commit(if (closed) "Pen shape" else "Pen line", np)
+        penSaber?.let { (cid, eid) ->
+            finishSaberPath(cid, eid, closed && n >= 3)
+            cancelPen()
+            toast = Toast("Saber path set — animate it with Start / End offset")
+            return
+        }
+        val makeSaber = penMakeSaber
+        var (np, clip) = TimelineOps.addPathShape(p, engine.position.value, shapePts.toList(), closed && n >= 3)
+        if (makeSaber) {
+            val spec = com.amiri.cut.core.effects.EffectCatalog.SABER
+            val e = com.amiri.cut.core.model.Effect(com.amiri.cut.core.model.newId(), "saber", opts = spec.options.associate { it.id to it.default })
+            np = TimelineOps.updateClip(np, clip.id) { c ->
+                c.copy(
+                    name = "Saber line", effects = c.effects + e,
+                    shape = c.shape?.copy(props = c.shape.props.with("strokeA", com.amiri.cut.core.model.Param(0f)).with("fillA", com.amiri.cut.core.model.Param(0f))),
+                )
+            } ?: np
+            selectedEffectId = e.id
+        }
+        commit(if (makeSaber) "Saber line" else if (closed) "Pen shape" else "Pen line", np)
         selectedClipId = clip.id
-        shapePen = false
-        shapePts.clear()
+        cancelPen()
+        if (makeSaber) { activeTool = EditorTool.EFFECTS; toast = Toast("Saber line ready — color, glow and Start/End are in Effects") }
     }
 
     /** Moves vertex [index] of a pen path ([part] 0 = point, 1 = in handle, 2 = out handle). */

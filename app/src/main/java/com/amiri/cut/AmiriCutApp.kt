@@ -29,6 +29,7 @@ class AmiriCutApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         settings = AppSettings(this)
         projects = ProjectRepository(this)
         caches = CacheManager(this)

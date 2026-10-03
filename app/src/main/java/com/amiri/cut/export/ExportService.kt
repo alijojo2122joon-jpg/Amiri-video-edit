@@ -103,17 +103,34 @@ class ExportService : Service() {
             Build.VERSION.SDK_INT >= 29 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             else -> 0
         }
-        ServiceCompat.startForeground(this, NOTIF_ID, n, type)
+        // Never crash because the system refuses a foreground service: render anyway.
+        try {
+            ServiceCompat.startForeground(this, NOTIF_ID, n, type)
+        } catch (t: Throwable) {
+            android.util.Log.e("AmiriExport", "startForeground($type) failed", t)
+            if (type != 0) runCatching { ServiceCompat.startForeground(this, NOTIF_ID, n, 0) }
+        }
     }
 
     private fun loop() {
+        try { loopJobs() } catch (t: Throwable) {
+            android.util.Log.e("AmiriExport", "render loop crashed", t)
+        } finally {
+            running = false
+            runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH) }
+            stopSelf()
+        }
+    }
+
+    private fun loopJobs() {
         val app = application as AmiriCutApp
         while (true) {
             val job = ExportQueue.nextQueued() ?: break
             val cancel = ExportQueue.cancelFlag(job.id)
             ExportQueue.update(job.id) { it.copy(state = JobState.RUNNING) }
-            val tmp = File(app.caches.dir(com.amiri.cut.storage.CacheManager.Kind.RENDER), "${job.id}.mp4")
+            var tmp = File(app.cacheDir, "${job.id}.mp4")
             try {
+                tmp = File(app.caches.dir(com.amiri.cut.storage.CacheManager.Kind.RENDER), "${job.id}.mp4")
                 val project = app.projects.json.decodeFromString(Project.serializer(), job.projectJson)
                 var last = 0L
                 Exporter(this, app, project, job.settings, tmp, cancel) { p ->
@@ -121,13 +138,16 @@ class ExportService : Service() {
                     val now = System.currentTimeMillis()
                     if (now - last > 700) {
                         last = now
-                        notify(notification("${job.name} · ${(p.fraction * 100).toInt()}%", p.frame, p.totalFrames, job.id))
+                        runCatching { notify(notification("${job.name} · ${(p.fraction * 100).toInt()}%", p.frame, p.totalFrames, job.id)) }
                     }
                 }.run()
                 ExportQueue.update(job.id) { it.copy(progress = it.progress?.copy(stage = "Saving")) }
-                contentResolver.openOutputStream(Uri.parse(job.outUri), "w")!!.use { out -> tmp.inputStream().use { it.copyTo(out) } }
+                val dest = runCatching { contentResolver.openOutputStream(Uri.parse(job.outUri), "wt") }.getOrNull()
+                    ?: contentResolver.openOutputStream(Uri.parse(job.outUri), "w")
+                    ?: error("Can't write to the chosen file")
+                dest.use { out -> tmp.inputStream().use { it.copyTo(out) } }
                 ExportQueue.update(job.id) { it.copy(state = JobState.DONE) }
-                notifyDone("Exported ${job.name}")
+                runCatching { notifyDone("Exported ${job.name}") }
             } catch (e: InterruptedException) {
                 ExportQueue.update(job.id) { it.copy(state = JobState.CANCELLED) }
                 runCatching { contentResolver.delete(Uri.parse(job.outUri), null, null) }
@@ -135,14 +155,11 @@ class ExportService : Service() {
                 android.util.Log.e("AmiriExport", "export failed", t)
                 ExportQueue.update(job.id) { it.copy(state = JobState.FAILED, error = t.message ?: t.javaClass.simpleName) }
                 runCatching { contentResolver.delete(Uri.parse(job.outUri), null, null) }
-                notifyDone("Export failed: ${job.name}")
+                runCatching { notifyDone("Export failed: ${job.name}") }
             } finally {
                 tmp.delete()
             }
         }
-        running = false
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
-        stopSelf()
     }
 
     private fun channel(): String {

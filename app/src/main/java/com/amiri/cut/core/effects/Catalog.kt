@@ -274,7 +274,7 @@ object EffectCatalog {
             p("y2", "Line end Y", -0.5f, 1.5f, 0.5f),
         ) + rgb("c", "Glow color", 0.15f, 0.5f, 1f),
         options = listOf(
-            OptionSpec("source", "Core source", listOf("Layer path", "Line"), "Layer path"),
+            OptionSpec("source", "Core source", listOf("Layer path", "Drawn path", "Line"), "Layer path"),
             OptionSpec("composite", "Composite", listOf("Add", "Saber only"), "Add"),
         ),
         colors = listOf(Triple("cr", "cg", "cb")),
