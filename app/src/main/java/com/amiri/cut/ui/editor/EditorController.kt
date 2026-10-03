@@ -1062,11 +1062,67 @@ class EditorController(
             if (count < 2 || data == null) { toast = Toast("Couldn't track — choose a detailed area (edges, texture, contrast)"); return@runBusy }
             val cur = project ?: return@runBusy
             commit("Track", TimelineOps.updateClip(cur, c.id) { it.copy(tracking = data) })
+            attachPrompt = c.id
             toast = Toast(if (lost != null) "Tracked $count frames · target lost — place the box again there and continue" else "Tracked $count frames")
         }
     }
 
     fun trackForward() = track(1)
+
+    /** Set after a successful track: asks what to attach to the tracked point (clip id). */
+    var attachPrompt by mutableStateOf<String?>(null)
+
+    enum class AttachKind { TEXT, SHAPE, OVERLAY }
+
+    /**
+     * Creates a text / shape / overlay layer exactly on [trackedClipId]'s tracked point at the
+     * playhead, lasting to the end of the tracked clip, and attaches it to the track so it
+     * follows the point (and its scale/rotation when tracked).
+     */
+    fun attachNewToTrack(trackedClipId: String, kind: AttachKind, overlay: MediaAsset? = null) {
+        val p = project ?: return
+        val tc = p.clip(trackedClipId) ?: return
+        val td = tc.tracking ?: run { toast = Toast("Track the clip first"); return }
+        val t = engine.position.value.coerceIn(tc.startUs, tc.endUs - 1)
+        val sample = td.at(tc.sourceTimeAt(t)) ?: return
+        val cw = p.settings.width; val ch = p.settings.height
+        val pt = com.amiri.cut.render.LayerMath.trackedPoint(p, tc, sample.x, sample.y, t, cw, ch)
+        val px = (pt?.get(0) ?: (sample.x * cw)) / cw - 0.5f
+        val py = (pt?.get(1) ?: (sample.y * ch)) / ch - 0.5f
+        val dur = (tc.endUs - t).coerceAtLeast(1_000_000L)
+        val r: Pair<Project, Clip> = when (kind) {
+            AttachKind.TEXT -> TimelineOps.addText(p, t, "Text", dur)
+            AttachKind.SHAPE -> TimelineOps.addShape(p, t, com.amiri.cut.core.model.ShapeKind.ELLIPSE, dur).let { (np, c) ->
+                val nc = c.copy(shape = c.shape?.copy(props = c.shape.props.with("w", com.amiri.cut.core.model.Param(0.18f)).with("h", com.amiri.cut.core.model.Param(0.18f))))
+                TimelineOps.updateClip(np, c.id) { nc } to nc
+            }
+            AttachKind.OVERLAY -> TimelineOps.placeOverlay(p, overlay ?: return, t, dur) ?: return
+        }
+        var np = r.first
+        val id = r.second.id
+        np = TimelineOps.updateClip(np, id) { c ->
+            c.copy(
+                transform = c.transform.with("px", com.amiri.cut.core.model.Param(px)).with("py", com.amiri.cut.core.model.Param(py)),
+                follow = com.amiri.cut.core.model.Follow(trackedClipId, t, true, td.scaleRot, td.scaleRot),
+            )
+        }
+        commit("Attach ${kind.name.lowercase()} to track", np)
+        selectedClipId = id
+        attachPrompt = null
+        activeTool = when (kind) { AttachKind.TEXT -> EditorTool.TEXT; AttachKind.SHAPE -> EditorTool.SHAPE; AttachKind.OVERLAY -> EditorTool.TRANSFORM }
+        toast = Toast("Attached — it follows the tracked point")
+    }
+
+    /** Imports a photo/video and attaches it to the tracked point. */
+    fun attachOverlayFromUri(trackedClipId: String, uri: Uri) {
+        scope.launch {
+            MediaProbe.persistPermission(app.contentResolver, uri)
+            val a = MediaProbe.probe(app, uri) ?: run { toast = Toast("Couldn't read that file"); return@launch }
+            if (a.type == MediaType.AUDIO) { toast = Toast("Pick a photo or video"); return@launch }
+            requestCaches(a)
+            attachNewToTrack(trackedClipId, AttachKind.OVERLAY, a)
+        }
+    }
 
     /**
      * Tracks a mask by its own area (position, and scale & rotation in Similarity mode) so

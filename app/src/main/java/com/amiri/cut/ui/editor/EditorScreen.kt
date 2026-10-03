@@ -83,6 +83,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
@@ -138,6 +139,7 @@ fun EditorScreen(
 
     c.clipMenuFor?.let { id -> ClipMenuSheet(c, id) }
     c.keyMenu?.let { (id, t) -> KeyMenuSheet(c, id, t) }
+    c.attachPrompt?.let { id -> AttachSheet(c, id) }
 }
 
 @Composable
@@ -356,6 +358,43 @@ private fun ToastHost(c: EditorController, modifier: Modifier) {
             color = Amiri.TextPrimary, fontSize = 12.sp,
             modifier = Modifier.glass(RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AttachSheet(c: EditorController, trackedClipId: String) {
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) c.attachOverlayFromUri(trackedClipId, uri) else c.attachPrompt = null
+    }
+    ModalBottomSheet(onDismissRequest = { c.attachPrompt = null }, containerColor = Amiri.SurfaceHigh) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+            Text("Tracking done ✓", color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "What should follow the tracked point? It is placed exactly on the point at the playhead and moves with it.",
+                color = Amiri.TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp, bottom = 14.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AttachChoice(Icons.Outlined.TextFields, "Text", Modifier.weight(1f)) { c.attachNewToTrack(trackedClipId, EditorController.AttachKind.TEXT) }
+                AttachChoice(Icons.Outlined.Category, "Shape", Modifier.weight(1f)) { c.attachNewToTrack(trackedClipId, EditorController.AttachKind.SHAPE) }
+                AttachChoice(Icons.Outlined.PermMedia, "Overlay", Modifier.weight(1f)) { picker.launch(arrayOf("image/*", "video/*")) }
+            }
+            Text(
+                "Not now", color = Amiri.TextSecondary, style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 16.dp).clickable { c.attachPrompt = null }.padding(vertical = 8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AttachChoice(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp)).background(Amiri.Surface).clickable(onClick = onClick).padding(vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, label, tint = LocalAccent.current, modifier = Modifier.size(28.dp))
+        Text(label, color = Amiri.TextPrimary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
     }
 }
 

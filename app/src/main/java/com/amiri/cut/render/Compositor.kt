@@ -808,6 +808,17 @@ object LayerMath {
         return sw * fit to sh * fit
     }
 
+    /**
+     * Canvas pixel (top-left origin) of a point given in [tc]'s source uv, at timeline time
+     * [ts], using [tc]'s own transform (its own follow is ignored to avoid loops).
+     */
+    fun trackedPoint(project: Project, tc: Clip, u: Float, v: Float, ts: Long, cw: Int, ch: Int): FloatArray? {
+        val c = tc.copy(follow = null)
+        val t = ts.coerceIn(c.startUs, c.endUs - 1)
+        val (bw, bh) = baseSize(project, c, t, cw, ch, null) ?: return null
+        return Affine.forward(inverseOf(project, c, t, bw, bh, cw, ch), u, v, ch)
+    }
+
     /** Canvas-pixel (GL origin) → layer-uv (GL origin) affine for the clip at [ts], column-major. */
     fun inverseOf(project: Project, clip: Clip, ts: Long, baseW: Float, baseH: Float, cw: Int, ch: Int): FloatArray =
         FloatArray(9).also { inverse(project, clip, ts, baseW, baseH, cw, ch, it, 0) }
@@ -850,12 +861,20 @@ object LayerMath {
                 val now = td.at(tc.sourceTimeAt(ts.coerceIn(tc.startUs, tc.endUs - 1)))
                 val ref = td.at(tc.sourceTimeAt(f.refTimelineUs.coerceIn(tc.startUs, tc.endUs - 1)))
                 if (now != null && ref != null) {
-                    val sw = ta.displayWidth.coerceAtLeast(1).toDouble()
-                    val sh = ta.displayHeight.coerceAtLeast(1).toDouble()
-                    val fit = min(cw / sw, ch / sh)
                     if (f.position) {
-                        px += (now.x - ref.x) * sw * fit / cw
-                        py += (now.y - ref.y) * sh * fit / ch
+                        // Tracked point on the canvas (the tracked clip's own position/zoom included).
+                        val pn = trackedPoint(project, tc, now.x, now.y, ts, cw, ch)
+                        val pr = trackedPoint(project, tc, ref.x, ref.y, f.refTimelineUs, cw, ch)
+                        if (pn != null && pr != null) {
+                            px += (pn[0] - pr[0]) / cw
+                            py += (pn[1] - pr[1]) / ch
+                        } else {
+                            val sw = ta.displayWidth.coerceAtLeast(1).toDouble()
+                            val sh = ta.displayHeight.coerceAtLeast(1).toDouble()
+                            val fit = min(cw / sw, ch / sh)
+                            px += (now.x - ref.x) * sw * fit / cw
+                            py += (now.y - ref.y) * sh * fit / ch
+                        }
                     }
                     if (f.scale) scale *= (now.scale / ref.scale.coerceAtLeast(0.01f)).toDouble()
                     if (f.rotation) rot += (now.rot - ref.rot).toDouble()

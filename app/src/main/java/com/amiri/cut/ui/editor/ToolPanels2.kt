@@ -518,6 +518,14 @@ internal fun TrackPanel(c: EditorController) {
                 PanelAction(Icons.Outlined.ZoomOutMap, "◀ Both ▶") { c.track(0) }
                 PanelAction(Icons.Outlined.DeleteOutline, "Clear", enabled = clip.tracking != null) { c.clearTracking() }
             }
+            if (clip.tracking != null) {
+                SectionTitle("Put something on the tracked point")
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    PanelAction(Icons.Outlined.TextFields, "+ Text") { c.attachNewToTrack(clip.id, EditorController.AttachKind.TEXT) }
+                    PanelAction(Icons.Outlined.CropFree, "+ Shape") { c.attachNewToTrack(clip.id, EditorController.AttachKind.SHAPE) }
+                    PanelAction(Icons.Outlined.Layers, "+ Overlay") { c.attachPrompt = clip.id }
+                }
+            }
             clip.tracking?.let { Hint("Track data: ${it.samples.size} frames${if (it.scaleRot) " · scale & rotation" else ""}. Use it below (attach layers) or in Mask → Follow track. If the target was lost, move the playhead there, re-place the box and track again — the new part joins smoothly.") }
         }
 

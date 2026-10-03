@@ -371,6 +371,23 @@ object TimelineOps {
     private fun freeVisualTrack(p: Project, kinds: List<TrackKind>, start: Long, end: Long): Track? =
         p.tracks.firstOrNull { it.kind in kinds && !it.locked && isFree(it, start, end) }
 
+    /**
+     * Puts a photo/video on a free overlay track at [atUs] (creating one if needed), at most
+     * [maxDurationUs] long, scaled down so it reads as an overlay.
+     */
+    fun placeOverlay(p: Project, asset: MediaAsset, atUs: Long, maxDurationUs: Long, scale: Float = 0.4f): Pair<Project, Clip>? {
+        if (asset.type == MediaType.AUDIO) return null
+        val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
+        val base = newClipFor(asset, start)
+        val out = if (asset.isStill) maxDurationUs.coerceAtLeast(frame(p.settings.fps)) else minOf(base.sourceOutUs, base.sourceInUs + maxDurationUs.coerceAtLeast(frame(p.settings.fps)))
+        val clip = base.copy(sourceOutUs = out, transform = com.amiri.cut.core.model.Props.of("scale" to scale))
+        var proj = addAsset(p, asset)
+        val t = freeVisualTrack(proj, listOf(TrackKind.OVERLAY), clip.startUs, clip.endUs)
+            ?: run { proj = addTrack(proj, TrackKind.OVERLAY); proj.tracks.last { it.kind == TrackKind.OVERLAY } }
+        proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
+        return proj to clip
+    }
+
     /** Adds a 3 s text clip at [atUs] on a free Text (or Overlay) track, creating one if needed. */
     fun addText(p: Project, atUs: Long, text: String = "Text", durationUs: Long = 3_000_000L): Pair<Project, Clip> {
         val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
