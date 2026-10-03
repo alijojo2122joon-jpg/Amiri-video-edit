@@ -97,19 +97,27 @@ class ExportService : Service() {
         return START_NOT_STICKY
     }
 
+    /**
+     * Starts the foreground notification. Tries media processing first (Android 15+), then
+     * data sync; if the system refuses both, the export still runs (it just isn't protected
+     * from being stopped in the background). Never crashes the app.
+     */
     private fun startFg(n: Notification) {
-        val type = when {
-            Build.VERSION.SDK_INT >= 35 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
-            Build.VERSION.SDK_INT >= 29 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            else -> 0
+        val types = buildList {
+            if (Build.VERSION.SDK_INT >= 35) add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
+            if (Build.VERSION.SDK_INT >= 29) add(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            if (Build.VERSION.SDK_INT < 34) add(0)
         }
-        // Never crash because the system refuses a foreground service: render anyway.
-        try {
-            ServiceCompat.startForeground(this, NOTIF_ID, n, type)
-        } catch (t: Throwable) {
-            android.util.Log.e("AmiriExport", "startForeground($type) failed", t)
-            if (type != 0) runCatching { ServiceCompat.startForeground(this, NOTIF_ID, n, 0) }
+        for (type in types) {
+            try {
+                ServiceCompat.startForeground(this, NOTIF_ID, n, type)
+                android.util.Log.i("AmiriExport", "foreground ok type=$type")
+                return
+            } catch (t: Throwable) {
+                android.util.Log.e("AmiriExport", "startForeground type=$type failed: ${t.javaClass.simpleName}: ${t.message}")
+            }
         }
+        runCatching { notify(n) }
     }
 
     private fun loop() {

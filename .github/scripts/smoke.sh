@@ -22,6 +22,6 @@ emit() { while IFS= read -r l; do echo "::$1::${l//%/%25}"; done; }
 grep "RESULT\|progress" log.txt | tail -5 | emit notice
 [ "$died" = 1 ] && echo "::error::app process died during the self-test"
 head -80 crash.txt | emit error
-grep -E "AmiriExport|AndroidRuntime|FAILED" log.txt | head -60 | emit error
+grep -E "foreground|failed|FATAL|Exception:" log.txt | head -40 | emit warning
 adb shell ls -l /sdcard/Android/data/$PKG/files/ | emit notice
 grep -q "RESULT DONE" log.txt
