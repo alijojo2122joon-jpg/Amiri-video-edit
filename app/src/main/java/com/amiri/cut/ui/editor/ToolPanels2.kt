@@ -703,6 +703,35 @@ internal fun TextPanel(c: EditorController) {
     }
 }
 
+/** Filters: cinematic looks shown on the cat photo; for one clip or the whole video. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+internal fun FiltersPanel(c: EditorController) {
+    var whole by remember { mutableStateOf(c.wholeVideoFilter() != null) }
+    val pos by c.engine.position.collectAsState()
+    val target = remember(c.project, pos, c.selectedClipId, whole) { if (whole) c.wholeVideoFilter() else c.filterTarget() }
+    val fx = target?.effects?.firstOrNull { it.type == "color" }
+    val cur = fx?.opts?.get("look")
+    Column {
+        ChoiceChips(listOf(false, true), whole, { if (it) "Whole video" else "This clip" }) { whole = it }
+        Text(
+            if (whole) "One filter over every clip (an adjustment layer named Filter)." else target?.let { "Clip: ${it.name}" } ?: "Put the playhead over a clip",
+            color = Amiri.TextTertiary, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp),
+        )
+        if (cur != null && fx != null && target != null) {
+            ParamRow(c, EditorController.PTarget.Fx(target.id, fx.id), EffectCatalog.COLOR.param("lookAmt")!!, "Intensity · $cur")
+        }
+        androidx.compose.foundation.layout.FlowRow(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LookCard(null, cur == null) { c.applyFilter(null, whole) }
+            com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) -> LookCard(name, cur == name) { c.applyFilter(name, whole) } }
+        }
+        Hint("Fine-tune any filter in Color (Basic, Wheels, HSL, Curves) — the filter stays on top of your own grade.")
+    }
+}
+
 /** The bundled cat photo used to preview looks (loaded once). */
 private object LookPreview {
     @Volatile var cat: android.graphics.Bitmap? = null

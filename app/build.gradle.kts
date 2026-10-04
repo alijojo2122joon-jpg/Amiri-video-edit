@@ -13,8 +13,8 @@ android {
         applicationId = "com.amiri.cut"
         minSdk = 29
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.8.1"
+        versionCode = 13
+        versionName = "0.8.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Phones (arm64) and the emulator used for automatic tests (x86_64).
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }

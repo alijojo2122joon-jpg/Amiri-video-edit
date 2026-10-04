@@ -44,6 +44,7 @@ enum class Placement { APPEND_TO_MAIN, AT_PLAYHEAD, BIN_ONLY }
 enum class EditorTool(val label: String, val stage: Int) {
     MEDIA("Media", 1),
     CUT("Cut", 1),
+    FILTERS("Filters", 6),
     TRANSITION("Transitions", 2),
     TRANSFORM("Transform", 2),
     KEYS("Keyframes", 3),
@@ -1597,6 +1598,53 @@ class EditorController(
             if (effectId != null) updateEffect(effectId, "LUT") { it.copy(opts = it.opts + ("file" to stored)) }
             selectedEffectId = id
             toast = Toast("LUT imported")
+        }
+    }
+
+    // ═════════════════════════ Filters (looks) ═════════════════════════
+
+    /** The clip the Filters tool works on: the selected visual clip, else the clip under the playhead. */
+    fun filterTarget(): Clip? {
+        val p = project ?: return null
+        selectedClip()?.let { c -> if (p.trackOfClip(c.id)?.acceptsVisual == true) return c }
+        val pos = engine.position.value
+        return p.tracks.filter { it.acceptsVisual && !it.hidden }.firstNotNullOfOrNull { t ->
+            t.clipAt(pos)?.takeIf { it.kind == com.amiri.cut.core.model.ClipKind.MEDIA }
+        }
+    }
+
+    /** The whole-video filter: an adjustment layer named "Filter" covering the timeline. */
+    fun wholeVideoFilter(): Clip? = project?.tracks?.flatMap { it.clips }?.firstOrNull { it.adjustment && it.name.startsWith("Filter") }
+
+    private fun lookEffect(c: Clip, name: String?): Clip {
+        val fx = c.effects.firstOrNull { it.type == "color" }
+        val base = fx ?: com.amiri.cut.core.model.Effect(com.amiri.cut.core.model.newId(), "color")
+        val upd = if (name == null) base.copy(opts = base.opts - "look") else base.copy(opts = base.opts + ("look" to name))
+        return c.copy(effects = if (fx == null) c.effects + upd else c.effects.map { if (it.id == fx.id) upd else it })
+    }
+
+    /** Applies a look ([name] null = none) to one clip, or to the whole video. */
+    fun applyFilter(name: String?, wholeVideo: Boolean) {
+        var p = project ?: return
+        if (wholeVideo) {
+            var f = wholeVideoFilter()
+            if (f == null) {
+                if (name == null) return
+                val dur = p.durationUs.coerceAtLeast(1_000_000L)
+                val (np, clip) = TimelineOps.addAdjustment(p, 0, dur)
+                p = np; f = clip
+            }
+            val id = f.id
+            val np = TimelineOps.updateClip(p, id) { c -> lookEffect(c, name).copy(name = "Filter · ${name ?: "none"}", sourceOutUs = maxOf(c.sourceOutUs, p.durationUs - c.startUs)) } ?: return
+            commit("Filter ${name ?: "none"} (whole video)", np)
+            selectedClipId = id
+            selectedEffectId = np.clip(id)?.effects?.firstOrNull { it.type == "color" }?.id
+        } else {
+            val c = filterTarget() ?: run { toast = Toast("Put the playhead over a clip (or pick Whole video)"); return }
+            val np = TimelineOps.updateClip(p, c.id) { lookEffect(it, name) } ?: return
+            commit("Filter ${name ?: "none"}", np)
+            selectedClipId = c.id
+            selectedEffectId = np.clip(c.id)?.effects?.firstOrNull { it.type == "color" }?.id
         }
     }
 

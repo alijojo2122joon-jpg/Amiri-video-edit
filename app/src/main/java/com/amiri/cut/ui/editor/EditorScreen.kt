@@ -55,6 +55,7 @@ import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.Category
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Animation
+import androidx.compose.material.icons.outlined.FilterVintage
 import androidx.compose.material.icons.outlined.CenterFocusWeak
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.OpenInFull
@@ -307,6 +308,7 @@ private fun EditorTool.icon(): ImageVector = when (this) {
     EditorTool.KEYS -> Icons.Outlined.Timeline
     EditorTool.SHAPE -> Icons.Outlined.Category
     EditorTool.TRANSITION -> Icons.Outlined.Animation
+    EditorTool.FILTERS -> Icons.Outlined.FilterVintage
     EditorTool.STABILIZE -> Icons.Outlined.CenterFocusWeak
 }
 

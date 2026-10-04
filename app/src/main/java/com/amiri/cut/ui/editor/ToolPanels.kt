@@ -105,6 +105,7 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
                 EditorTool.KEYS -> KeyframesPanel(c)
                 EditorTool.SHAPE -> ShapePanel(c)
                 EditorTool.TRANSITION -> TransitionPanel(c)
+                EditorTool.FILTERS -> FiltersPanel(c)
                 EditorTool.STABILIZE -> StabilizePanel(c)
             }
         }
