@@ -17,3 +17,11 @@
 -dontwarn com.google.protobuf.**
 -dontwarn com.google.auto.value.**
 -dontwarn javax.annotation.**
+-dontwarn javax.lang.model.**
+-dontwarn javax.tools.**
+-dontwarn javax.annotation.processing.**
+-dontwarn autovalue.shaded.**
+-dontwarn com.google.auto.**
+-dontwarn com.squareup.javapoet.**
+-dontwarn org.checkerframework.**
+-dontwarn com.google.errorprone.**
