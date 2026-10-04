@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(settings.catSounds, settings.purr) {
                 com.amiri.cut.ui.theme.CatSounds.soundsOn = settings.catSounds
                 com.amiri.cut.ui.theme.CatSounds.purrOn = settings.purr
+                if (!settings.purr || !settings.catSounds) com.amiri.cut.ui.theme.CatSounds.stopPurr()
             }
             AmiriTheme(accent = Color(settings.accent.argb)) {
                 com.amiri.cut.ui.common.CatTouchFeedback {

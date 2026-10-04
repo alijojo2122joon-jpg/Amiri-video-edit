@@ -122,6 +122,7 @@ fun HomeScreen(
         }
     }
 
+    com.amiri.cut.ui.common.PurrWhileVisible()
     Box(Modifier.fillMaxSize()) {
         AmbientBackground()
         LazyColumn(

@@ -217,10 +217,11 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
     // and any track with animated clips gets a keyframe lane below.
     fun audioDp(t: Track) = if (t.acceptsVisual && t.clips.any { cl -> cl.kind == com.amiri.cut.core.model.ClipKind.MEDIA && p.asset(cl.assetId)?.hasAudio == true }) 22.dp else 0.dp
     fun keyDp(t: Track) = if (t.clips.any { it.keyTimes().isNotEmpty() }) 18.dp else 0.dp
-    fun rowHeightDp(t: Track) = bodyDp(t.kind) + audioDp(t) + keyDp(t)
+    // Empty tracks fold to a thin row so the timeline stays compact.
+    fun rowHeightDp(t: Track) = if (t.clips.isEmpty()) 24.dp else bodyDp(t.kind) + audioDp(t) + keyDp(t)
     val gapPx = with(density) { 3.dp.toPx() }
     val heights = p.tracks.map { with(density) { rowHeightDp(it).toPx() } }
-    geo.bodyHs = p.tracks.map { with(density) { bodyDp(it.kind).toPx() } }
+    geo.bodyHs = p.tracks.map { with(density) { (if (it.clips.isEmpty()) 24.dp else bodyDp(it.kind)).toPx() } }
     geo.audioHs = p.tracks.map { with(density) { audioDp(it).toPx() } }
     geo.keyHs = p.tracks.map { with(density) { keyDp(it).toPx() } }
     val tops = run {
@@ -262,6 +263,7 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
                         onHide = { c.toggleTrackHidden(t.id) },
                         onMute = { c.toggleTrackMuted(t.id) },
                         onDelete = { c.removeTrack(t.id) },
+                        compact = t.clips.isEmpty(),
                     )
                     if (i < p.tracks.lastIndex) Box(Modifier.height(3.dp))
                 }
@@ -542,7 +544,14 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TrackHeader(t: Track, modifier: Modifier, onLock: () -> Unit, onHide: () -> Unit, onMute: () -> Unit, onDelete: () -> Unit) {
+private fun TrackHeader(t: Track, modifier: Modifier, onLock: () -> Unit, onHide: () -> Unit, onMute: () -> Unit, onDelete: () -> Unit, compact: Boolean = false) {
+    if (compact) {
+        Row(modifier.background(Color(0xFF101013)).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(t.name, color = Amiri.TextTertiary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
+            Icon(Icons.Outlined.Close, "Delete track", tint = Amiri.TextTertiary, modifier = Modifier.size(16.dp).clickable(onClick = onDelete).padding(2.dp))
+        }
+        return
+    }
     val small = t.kind == TrackKind.TEXT
     Column(
         modifier.background(Color(0xFF131316)).padding(horizontal = 6.dp, vertical = if (small) 2.dp else 5.dp),

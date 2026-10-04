@@ -145,3 +145,98 @@ fun PawSteps(modifier: Modifier, color: Color, steps: Int = 5) {
 }
 
 @Suppress("unused") private val keep = cos(0.0)
+
+/** Plays the soft purr while this screen is visible (stops when the app goes to the background). */
+@Composable
+fun PurrWhileVisible() {
+    val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(owner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            when (e) {
+                androidx.lifecycle.Lifecycle.Event.ON_START -> com.amiri.cut.ui.theme.CatSounds.startPurr()
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> com.amiri.cut.ui.theme.CatSounds.stopPurr()
+                else -> Unit
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        com.amiri.cut.ui.theme.CatSounds.startPurr()
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+}
+
+/**
+ * Every minute a cat strolls slowly along the bottom of the editor, swaying its tail.
+ * If the screen is touched while it walks, it dashes away; a minute later it comes back.
+ * It never takes touches (drawn only).
+ */
+@Composable
+fun WalkingCat(modifier: Modifier, body: Color, eye: Color, intervalMs: Long = 60_000L) {
+    val state = androidx.compose.runtime.remember { floatArrayOf(-1f, 1f, 0f, 0f) } // x (0..1, -1 = hidden), dir, phase, fleeing
+    var frame by androidx.compose.runtime.remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(intervalMs)
+            val dir = if (kotlin.random.Random.nextBoolean()) 1f else -1f
+            state[0] = if (dir > 0) -0.15f else 1.15f; state[1] = dir; state[2] = 0f; state[3] = 0f
+            val start = android.os.SystemClock.uptimeMillis()
+            var last = start
+            while (state[0] > -0.2f && state[0] < 1.2f) {
+                androidx.compose.runtime.withFrameMillis { _ -> }
+                val now = android.os.SystemClock.uptimeMillis()
+                val dt = (now - last).coerceAtMost(64) / 1000f
+                last = now
+                if (state[3] == 0f && com.amiri.cut.ui.theme.CatSounds.lastTouchMs > start) state[3] = 1f
+                val speed = if (state[3] > 0f) 0.9f else 1f / 18f // fraction of the width per second
+                state[0] += state[1] * speed * dt
+                state[2] += dt * (if (state[3] > 0f) 9f else 1.6f)
+                frame = now
+            }
+            state[0] = -1f
+            frame = android.os.SystemClock.uptimeMillis()
+        }
+    }
+    Canvas(modifier) {
+        @Suppress("UNUSED_EXPRESSION") frame
+        val x = state[0]
+        if (x < -0.5f) return@Canvas
+        val u = size.height * 0.95f
+        val flee = state[3] > 0f
+        val ph = state[2] * 2f * Math.PI.toFloat()
+        val cx = x * size.width
+        val bob = kotlin.math.abs(sin(ph)) * u * (if (flee) 0.08f else 0.03f)
+        val cy = size.height - u * 0.42f - bob
+        val dir = state[1]
+        fun px(dx: Float) = cx + dir * dx * u
+        // Legs (opposite pairs swing together).
+        val legTop = cy + u * 0.12f
+        val swing = if (flee) 38f else 24f
+        listOf(-0.3f to 0f, -0.16f to Math.PI.toFloat(), 0.18f to Math.PI.toFloat(), 0.32f to 0f).forEach { (lx, off) ->
+            val a = Math.toRadians((sin(ph + off) * swing).toDouble())
+            val len = u * 0.3f
+            drawLine(body, Offset(px(lx), legTop), Offset(px(lx) + dir * (sin(a) * len).toFloat(), legTop + (cos(a) * len).toFloat()), strokeWidth = u * 0.075f, cap = StrokeCap.Round)
+        }
+        // Tail: slow, flirty S-curve sway (straight up when running).
+        val sway = sin(state[2] * 2.2f) * u * 0.18f
+        val tail = Path().apply {
+            moveTo(px(-0.46f), cy - u * 0.04f)
+            if (flee) cubicTo(px(-0.66f), cy - u * 0.2f, px(-0.7f), cy - u * 0.5f, px(-0.62f), cy - u * 0.62f)
+            else cubicTo(px(-0.7f), cy - u * 0.05f + sway * 0.3f, px(-0.58f) + sway * dir, cy - u * 0.5f, px(-0.74f) + sway * 1.2f * dir, cy - u * 0.62f)
+        }
+        drawPath(tail, body, style = Stroke(u * 0.07f, cap = StrokeCap.Round))
+        // Body
+        drawOval(body, Offset(cx - u * 0.5f, cy - u * 0.2f), Size(u, u * 0.4f))
+        // Head + ears
+        val hx = px(0.52f); val hy = cy - u * 0.24f; val hr = u * 0.2f
+        val ears = Path().apply {
+            moveTo(hx - hr * 0.8f, hy - hr * 0.35f); lineTo(hx - hr * 0.55f, hy - hr * 1.25f); lineTo(hx - hr * 0.05f, hy - hr * 0.75f); close()
+            moveTo(hx + hr * 0.8f, hy - hr * 0.35f); lineTo(hx + hr * 0.6f, hy - hr * 1.25f); lineTo(hx + hr * 0.1f, hy - hr * 0.75f); close()
+        }
+        drawPath(ears, body)
+        drawCircle(body, hr, Offset(hx, hy))
+        val blink = (state[2] % 4f) > 3.85f
+        val ex = hx + dir * hr * 0.45f; val ey = hy - hr * 0.1f
+        if (blink && !flee) drawLine(eye, Offset(ex - hr * 0.12f, ey), Offset(ex + hr * 0.12f, ey), strokeWidth = hr * 0.08f)
+        else drawOval(eye, Offset(ex - hr * 0.12f, ey - hr * (if (flee) 0.2f else 0.15f)), Size(hr * 0.24f, hr * (if (flee) 0.4f else 0.3f)))
+        drawCircle(Color(0xFFF2A0B4), hr * 0.08f, Offset(hx + dir * hr * 0.92f, hy + hr * 0.15f))
+    }
+}

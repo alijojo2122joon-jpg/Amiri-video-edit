@@ -766,6 +766,80 @@ private fun LookCard(name: String?, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** All keyframes of the video; tap one, then give it Easy Ease or one of the Flow curves. */
+@Composable
+private fun FlowSection(c: EditorController) {
+    val p = c.project ?: return
+    val accent = LocalAccent.current
+    val all = remember(p) { p.tracks.flatMap { it.clips }.flatMap { cl -> cl.keyMarks().map { m -> Triple(cl, m.t, m) } }.sortedBy { it.first.startUs + it.second } }
+    SectionTitle("Keyframes in this video (${all.size})")
+    if (all.isEmpty()) { Hint("No keyframes yet."); return }
+    val sel = c.selectedKey
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        all.forEach { (cl, t, m) ->
+            val on = sel?.first == cl.id && sel.second == t
+            val mark = if (m.easeIn || m.easeOut) "⧗" else if (m.hold) "■" else "◆"
+            Text(
+                "$mark ${cl.name.take(10)} · ${FrameTime.timecode(cl.startUs + t, p.settings.fps)}",
+                color = if (on) Color.Black else Amiri.TextPrimary, fontSize = 11.sp,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(if (on) accent else Amiri.SurfaceHigh)
+                    .clickable { c.selectedKey = cl.id to t; c.select(cl.id); c.engine.pause(); c.engine.seekTo(cl.startUs + t) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+    }
+    SectionTitle(if (sel != null) "Flow for the selected keyframe" else "Flow — pick a keyframe above")
+    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowCard("Linear", null) { sel?.let { (id, t) -> c.applyFlowAt(id, t, null) } ?: run { c.toast = Toast("Tap a keyframe first") } }
+        com.amiri.cut.core.model.FlowPresets.ALL.forEach { f ->
+            FlowCard(f.name, f) { sel?.let { (id, t) -> c.applyFlowAt(id, t, f) } ?: run { c.toast = Toast("Tap a keyframe first") } }
+        }
+    }
+    var allMode by remember { mutableStateOf(0) }
+    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Apply to all: ", color = Amiri.TextTertiary, fontSize = 11.sp)
+        ToggleChip("This layer", allMode == 1) { allMode = if (allMode == 1) 0 else 1 }
+        ToggleChip("Whole video", allMode == 2) { allMode = if (allMode == 2) 0 else 2 }
+    }
+    if (allMode != 0) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            com.amiri.cut.core.model.FlowPresets.ALL.forEach { f ->
+                FlowCard(f.name, f) { c.applyFlowAll(if (allMode == 1) c.selectedClipId else null, f); allMode = 0 }
+            }
+        }
+    }
+}
+
+/** A Flow curve preview: the motion curve drawn from start (left) to end (right). */
+@Composable
+private fun FlowCard(name: String, f: com.amiri.cut.core.model.FlowPresets.Flow?, onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    Column(Modifier.width(78.dp).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+        androidx.compose.foundation.Canvas(Modifier.size(width = 74.dp, height = 56.dp).clip(RoundedCornerShape(12.dp)).background(Amiri.SurfaceHigh)) {
+            val pad = 10f
+            val w = size.width - pad * 2; val h = size.height - pad * 2
+            fun pt(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(pad + x * w, pad + (1f - y) * h * 0.7f + h * 0.15f)
+            drawLine(Color.White.copy(alpha = 0.08f), pt(0f, 0f), pt(1f, 0f), 1f)
+            drawLine(Color.White.copy(alpha = 0.08f), pt(0f, 1f), pt(1f, 1f), 1f)
+            val path = androidx.compose.ui.graphics.Path()
+            for (i in 0..40) {
+                val u = i / 40f
+                val (x, y) = if (f == null) u to u else {
+                    val mu = 1f - u
+                    val bx = 3 * mu * mu * u * f.c1x + 3 * mu * u * u * f.c2x + u * u * u
+                    val by = 3 * mu * mu * u * f.c1y + 3 * mu * u * u * f.c2y + u * u * u
+                    bx to by
+                }
+                val o = pt(x, y)
+                if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y)
+            }
+            drawPath(path, accent, style = androidx.compose.ui.graphics.drawscope.Stroke(2.5f))
+            drawCircle(Color.White, 3f, pt(0f, 0f)); drawCircle(Color.White, 3f, pt(1f, 1f))
+        }
+        Text(name, color = Amiri.TextSecondary, fontSize = 10.sp, maxLines = 1, modifier = Modifier.padding(top = 3.dp))
+    }
+}
+
 @Composable
 private fun TextPresetCard(name: String, glass: Boolean, onClick: () -> Unit) {
     val accent = LocalAccent.current
@@ -1253,6 +1327,7 @@ internal fun KeyframesPanel(c: EditorController) {
             PanelAction(Icons.Outlined.ChevronRight, "Next key") { c.jumpKey(clip.id, true) }
         }
         Hint("◆ keys Position, Scale, Rotation and Opacity together. Change values at another time to create motion. Keyframes show as diamonds on the clip in the timeline — drag them to retime.")
+        FlowSection(c)
         KeyframeBar(c, clip)
         // Every animated parameter of this clip, grouped by owner.
         data class Row3(val target: EditorController.PTarget, val spec: ParamSpec, val group: String)

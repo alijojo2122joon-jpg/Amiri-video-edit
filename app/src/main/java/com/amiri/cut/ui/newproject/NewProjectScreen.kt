@@ -83,6 +83,7 @@ fun NewProjectScreen(
     onBack: () -> Unit,
     onCreated: (projectId: String, importUris: List<Uri>) -> Unit,
 ) {
+    com.amiri.cut.ui.common.PurrWhileVisible()
     val scope = rememberCoroutineScope()
     val accent = LocalAccent.current
     var name by remember { mutableStateOf("Edit " + SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date())) }

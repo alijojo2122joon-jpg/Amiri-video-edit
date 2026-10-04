@@ -1697,6 +1697,10 @@ class EditorController(
     var viewZoom by mutableFloatStateOf(1f)
     var viewPanX by mutableFloatStateOf(0f)
     var viewPanY by mutableFloatStateOf(0f)
+    /** Timeline height in dp (compact by default — about two rows; drag the handle to resize). */
+    var timelineHeightDp by mutableFloatStateOf(app.getSharedPreferences("amiri_settings", android.content.Context.MODE_PRIVATE).getFloat("timelineH", 150f))
+    fun saveTimelineHeight() { app.getSharedPreferences("amiri_settings", android.content.Context.MODE_PRIVATE).edit().putFloat("timelineH", timelineHeightDp).apply() }
+
     /** Hide the timeline to give the preview the whole screen (auto on in Roto). */
     var expandedPreview by mutableStateOf(false)
 
@@ -1966,6 +1970,44 @@ class EditorController(
                 else -> it
             }
         })
+    }
+
+    /** Keyframe picked in the Keyframes tool (clip id, clip-local time). */
+    var selectedKey by mutableStateOf<Pair<String, Long>?>(null)
+
+    private fun flowKey(k: com.amiri.cut.core.model.Key, f: com.amiri.cut.core.model.FlowPresets.Flow?) =
+        if (f == null) k.copy(interp = com.amiri.cut.core.model.Interp.LINEAR)
+        else k.copy(interp = com.amiri.cut.core.model.Interp.BEZIER, c1x = f.c1x, c1y = f.c1y, c2x = f.c2x, c2y = f.c2y)
+
+    /** Applies a Flow curve (null = linear) to the motion leaving the keyframe at [local] (or arriving, for the last key). */
+    fun applyFlowAt(clipId: String, local: Long, f: com.amiri.cut.core.model.FlowPresets.Flow?) =
+        mapKeysAt(clipId, local, "Flow: ${f?.name ?: "Linear"}") { prm, k ->
+            val i = prm.keys.indexOf(k)
+            val target = if (i == prm.keys.lastIndex && i > 0) i - 1 else i
+            prm.copy(keys = prm.keys.mapIndexed { j, it -> if (j == target) flowKey(it, f) else it })
+        }
+
+    /** Applies a Flow curve to every keyframe of one clip, or of the whole video when [clipId] is null. */
+    fun applyFlowAll(clipId: String?, f: com.amiri.cut.core.model.FlowPresets.Flow?) {
+        val p = project ?: return
+        fun mv(pr: com.amiri.cut.core.model.Props) = com.amiri.cut.core.model.Props(pr.p.mapValues { (_, prm) ->
+            if (prm.keys.size < 2) prm else prm.copy(keys = prm.keys.mapIndexed { j, k -> if (j < prm.keys.lastIndex) flowKey(k, f) else k })
+        })
+        var np = p
+        for (c in p.tracks.flatMap { it.clips }) {
+            if (clipId != null && c.id != clipId) continue
+            if (c.keyTimes().isEmpty()) continue
+            np = TimelineOps.updateClip(np, c.id) { cl ->
+                cl.copy(
+                    transform = mv(cl.transform), audio = mv(cl.audio),
+                    effects = cl.effects.map { it.copy(props = mv(it.props)) },
+                    masks = cl.masks.map { it.copy(props = mv(it.props)) },
+                    text = cl.text?.let { it.copy(props = mv(it.props)) },
+                    shape = cl.shape?.let { it.copy(props = mv(it.props)) },
+                )
+            } ?: np
+        }
+        commit("Flow ${f?.name ?: "Linear"} on all keyframes", np)
     }
 
     /** Toggles a key between linear and eased (double-tap on the timeline). */

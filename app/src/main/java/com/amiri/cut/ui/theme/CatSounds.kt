@@ -23,11 +23,11 @@ object CatSounds {
     @Volatile var hapticsOn = true
     /** In the editor the app stays silent (only the tick vibration remains). */
     @Volatile var inEditor = false
+    /** Last time the screen was touched (uptime ms) — the walking cat runs away. */
+    @Volatile var lastTouchMs = 0L
 
     private var pool: SoundPool? = null
     private val mews = IntArray(4)
-    private var purr = 0
-    private var purrStream = 0
     private var lastMew = 0L
     private var vibrator: Vibrator? = null
     private val main = Handler(Looper.getMainLooper())
@@ -42,7 +42,7 @@ object CatSounds {
         mews[1] = p.load(context, R.raw.cat_mew2, 1)
         mews[2] = p.load(context, R.raw.cat_mew3, 1)
         mews[3] = p.load(context, R.raw.cat_mrrp, 1)
-        purr = p.load(context, R.raw.cat_purr, 1)
+        appContext = context.applicationContext
         pool = p
         vibrator = runCatching {
             if (Build.VERSION.SDK_INT >= 31) (context.getSystemService(VibratorManager::class.java))?.defaultVibrator
@@ -52,6 +52,7 @@ object CatSounds {
 
     /** A tiny tick vibration (touch down). */
     fun tick() {
+        lastTouchMs = android.os.SystemClock.uptimeMillis()
         if (!hapticsOn) return
         val v = vibrator ?: return
         runCatching {
@@ -72,29 +73,41 @@ object CatSounds {
         p.play(id, 0.16f, 0.16f, 1, 0, rate)
     }
 
-    /** Soft purr in the background: fades in, purrs for a while, fades out. */
-    fun purr(seconds: Float = 7f) {
+    private var appContext: Context? = null
+    private var player: android.media.MediaPlayer? = null
+    private var purrIndex = 0
+    private var purrGen = 0
+
+    /** Soft real purring in the background (home / new project), looping gently between two recordings. */
+    fun startPurr() {
         if (!soundsOn || !purrOn || inEditor) return
-        val p = pool ?: return
-        // The sample may still be loading on first start: try a few times.
-        fun attempt(left: Int) {
-            val s = p.play(purr, 0f, 0f, 0, 0, 1f)
-            if (s == 0) { if (left > 0) main.postDelayed({ attempt(left - 1) }, 250); return }
-            purrStream = s
-            val steps = 30
-            val peak = 0.14f
-            for (i in 0..steps) main.postDelayed({ if (purrStream == s) p.setVolume(s, peak * i / steps, peak * i / steps) }, i * 50L)
-            val outAt = (seconds * 1000).toLong() - 1500
-            for (i in 0..steps) main.postDelayed({ if (purrStream == s) p.setVolume(s, peak * (steps - i) / steps, peak * (steps - i) / steps) }, outAt + i * 50L)
+        if (player != null) return
+        val ctx = appContext ?: return
+        val gen = ++purrGen
+        fun playNext() {
+            if (gen != purrGen) return
+            val res = if (purrIndex++ % 2 == 0) R.raw.purr_a else R.raw.purr_b
+            val mp = runCatching { android.media.MediaPlayer.create(ctx, res) }.getOrNull() ?: return
+            mp.setVolume(0f, 0f)
+            mp.setOnCompletionListener { it.release(); if (player === it) player = null; main.postDelayed({ if (gen == purrGen && player == null) { playNext() } }, 1500) }
+            player = mp
+            mp.start()
+            val peak = 0.2f
+            for (i2 in 0..30) main.postDelayed({ if (player === mp && gen == purrGen) runCatching { mp.setVolume(peak * i2 / 30, peak * i2 / 30) } }, i2 * 60L)
         }
-        attempt(8)
+        playNext()
     }
 
+    /** Kept for the splash screen. */
+    fun purr(@Suppress("UNUSED_PARAMETER") seconds: Float = 7f) = startPurr()
+
     fun stopPurr() {
-        val p = pool ?: return
-        val s = purrStream
-        if (s == 0) return
-        purrStream = 0
-        for (i in 0..10) main.postDelayed({ p.setVolume(s, 0.14f * (10 - i) / 10, 0.14f * (10 - i) / 10); if (i == 10) p.stop(s) }, i * 40L)
+        purrGen++
+        val mp = player ?: return
+        player = null
+        for (i in 0..10) main.postDelayed({
+            runCatching { mp.setVolume(0.2f * (10 - i) / 10, 0.2f * (10 - i) / 10) }
+            if (i == 10) runCatching { mp.stop(); mp.release() }
+        }, i * 50L)
     }
 }

@@ -9,6 +9,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -173,13 +175,18 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
             }
         }
     } else {
-        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            TopBar(c, onBack)
-            PreviewPane(c, Modifier.weight(1f).fillMaxWidth())
-            TransportBar(c)
-            if (!expanded) LayerFxStrip(c)
-            if (!expanded) TimelineView(c, Modifier.fillMaxWidth().height(250.dp))
-            ToolArea(c)
+        Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Column(Modifier.fillMaxSize()) {
+                TopBar(c, onBack)
+                PreviewPane(c, Modifier.weight(1f).fillMaxWidth())
+                TransportBar(c)
+                if (!expanded) LayerFxStrip(c)
+                if (!expanded) TimelineResizeHandle(c)
+                if (!expanded) TimelineView(c, Modifier.fillMaxWidth().height(c.timelineHeightDp.dp))
+                ToolArea(c)
+            }
+            // A cat strolls along the bottom every minute (runs away when you touch the screen).
+            com.amiri.cut.ui.common.WalkingCat(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(46.dp), Color(0xFF6A6A76), LocalAccent.current)
         }
     }
 }
@@ -379,6 +386,24 @@ private fun ToastHost(c: EditorController, modifier: Modifier) {
             color = Amiri.TextPrimary, fontSize = 12.sp,
             modifier = Modifier.glass(RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
         )
+    }
+}
+
+/** A small grab bar: drag up to make the timeline taller, down to make it smaller. */
+@Composable
+private fun TimelineResizeHandle(c: EditorController) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    Box(
+        Modifier.fillMaxWidth().height(16.dp).background(Color(0xFF0D0D0F))
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(onDragEnd = { c.saveTimelineHeight() }) { ch, dy ->
+                    ch.consume()
+                    c.timelineHeightDp = (c.timelineHeightDp - with(density) { dy.toDp().value }).coerceIn(96f, 560f)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Amiri.TextTertiary))
     }
 }
 

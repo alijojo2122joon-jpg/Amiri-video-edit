@@ -132,3 +132,19 @@ object Keyframes {
         return by(s)
     }
 }
+
+
+/** "Flow"-style easing curves (cubic-bezier control points, like CSS / After Effects Flow). */
+object FlowPresets {
+    data class Flow(val name: String, val c1x: Float, val c1y: Float, val c2x: Float, val c2y: Float)
+    val ALL = listOf(
+        Flow("Easy Ease", 0.33f, 0f, 0.67f, 1f),
+        Flow("Smooth Out", 0.16f, 1f, 0.3f, 1f),
+        Flow("Smooth In", 0.7f, 0f, 0.84f, 0f),
+        Flow("Expo In-Out", 0.87f, 0f, 0.13f, 1f),
+        Flow("Snap (velocity)", 0.95f, 0f, 0.05f, 1f),
+        Flow("Overshoot", 0.34f, 1.56f, 0.64f, 1f),
+        Flow("Anticipate", 0.36f, 0f, 0.66f, -0.56f),
+        Flow("Back In-Out", 0.68f, -0.6f, 0.32f, 1.6f),
+    )
+}
