@@ -146,6 +146,7 @@ fun EditorScreen(
 
 @Composable
 private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
+    LaunchedEffect(Unit) { com.amiri.cut.ui.theme.CatSounds.stopPurr() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Roto needs a big canvas: hide the timeline automatically (toggle with ⤢ in the transport bar).
     LaunchedEffect(c.activeTool) {
@@ -341,7 +342,17 @@ private fun ToolArea(c: EditorController) {
                         .alpha(if (t.available) 1f else 0.45f),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Icon(t.icon(), t.label, tint = if (active) accent else Amiri.TextPrimary, modifier = Modifier.size(21.dp))
+                    // The active tool wears little cat ears.
+                    Box(contentAlignment = Alignment.Center) {
+                        if (active) androidx.compose.foundation.Canvas(Modifier.size(width = 30.dp, height = 30.dp)) {
+                            val ear = androidx.compose.ui.graphics.Path().apply {
+                                moveTo(size.width * 0.12f, size.height * 0.3f); lineTo(size.width * 0.2f, 0f); lineTo(size.width * 0.38f, size.height * 0.18f); close()
+                                moveTo(size.width * 0.88f, size.height * 0.3f); lineTo(size.width * 0.8f, 0f); lineTo(size.width * 0.62f, size.height * 0.18f); close()
+                            }
+                            drawPath(ear, accent.copy(alpha = 0.85f))
+                        }
+                        Icon(t.icon(), t.label, tint = if (active) accent else Amiri.TextPrimary, modifier = Modifier.size(21.dp))
+                    }
                     Text(t.label, color = if (active) accent else Amiri.TextSecondary, fontSize = 10.sp, modifier = Modifier.padding(top = 3.dp))
                 }
             }

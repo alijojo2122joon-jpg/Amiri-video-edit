@@ -29,6 +29,7 @@ import com.amiri.cut.ui.theme.AmiriTheme
 import com.amiri.cut.ui.theme.Haptics
 
 sealed interface Screen {
+    data object Splash : Screen
     data object Home : Screen
     data object NewProject : Screen
     data object Settings : Screen
@@ -43,18 +44,24 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("amiri_selftest", false) == true) com.amiri.cut.export.SelfTest.run(this)
         setContent {
             val settings = app.settings
-            LaunchedEffect(settings.haptics) { Haptics.enabled = settings.haptics }
+            LaunchedEffect(settings.haptics) { Haptics.enabled = settings.haptics; com.amiri.cut.ui.theme.CatSounds.hapticsOn = settings.haptics }
+            LaunchedEffect(settings.catSounds, settings.purr) {
+                com.amiri.cut.ui.theme.CatSounds.soundsOn = settings.catSounds
+                com.amiri.cut.ui.theme.CatSounds.purrOn = settings.purr
+            }
             AmiriTheme(accent = Color(settings.accent.argb)) {
-                AppNavigation(app)
-                CrashDialog(app)
+                com.amiri.cut.ui.common.CatTouchFeedback {
+                    AppNavigation(app, splash = savedInstanceState == null)
+                    CrashDialog(app)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun AppNavigation(app: AmiriCutApp) {
-    val stack = remember { mutableStateListOf<Screen>(Screen.Home) }
+private fun AppNavigation(app: AmiriCutApp, splash: Boolean) {
+    val stack = remember { mutableStateListOf<Screen>(if (splash) Screen.Splash else Screen.Home) }
     val current = stack.last()
     fun push(s: Screen) { stack.add(s) }
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
@@ -70,6 +77,7 @@ private fun AppNavigation(app: AmiriCutApp) {
         label = "nav",
     ) { screen ->
         when (screen) {
+            Screen.Splash -> com.amiri.cut.ui.home.CatSplash { replace(Screen.Home) }
             Screen.Home -> HomeScreen(
                 app = app,
                 onNewProject = { push(Screen.NewProject) },

@@ -38,5 +38,6 @@ class AmiriCutApp : Application() {
         roto = RotoStore(this)
         luts = LutStore(this)
         fonts = FontManager(this)
+        com.amiri.cut.ui.theme.CatSounds.init(this)
     }
 }

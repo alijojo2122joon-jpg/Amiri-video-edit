@@ -98,6 +98,12 @@ fun SettingsScreen(app: AmiriCutApp, onBack: () -> Unit) {
                 }
 
                 Column {
+                    SectionLabel("Cat touches 🐾")
+                    ToggleRow("Tiny mew on taps", s.catSounds) { s.updateCatSounds(it) }
+                    ToggleRow("Soft purr when the app opens", s.purr) { s.updatePurr(it) }
+                }
+
+                Column {
                     SectionLabel("Performance")
                     ChoiceChips(PerformanceMode.entries.toList(), s.performance, { it.label }) { s.updatePerformance(it) }
                     Gap(h = 8)

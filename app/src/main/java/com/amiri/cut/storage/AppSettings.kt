@@ -61,4 +61,8 @@ class AppSettings(context: Context) {
     fun updatePerformance(m: PerformanceMode) { performance = m; prefs.edit().putString("performance", m.name).apply() }
     fun updateSnapping(on: Boolean) { snapping = on; prefs.edit().putBoolean("snapping", on).apply() }
     fun updateHaptics(on: Boolean) { haptics = on; prefs.edit().putBoolean("haptics", on).apply() }
+    var catSounds by mutableStateOf(prefs.getBoolean("catSounds", true))
+    var purr by mutableStateOf(prefs.getBoolean("purr", true))
+    fun updateCatSounds(on: Boolean) { catSounds = on; prefs.edit().putBoolean("catSounds", on).apply() }
+    fun updatePurr(on: Boolean) { purr = on; prefs.edit().putBoolean("purr", on).apply() }
 }
