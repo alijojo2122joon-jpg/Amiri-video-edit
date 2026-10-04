@@ -32,6 +32,9 @@ object SelfTest {
         val dir = activity.getExternalFilesDir(null) ?: return
         val src = File(dir, "selftest.mp4")
         if (!src.exists()) { Log.w(TAG, "RESULT skipped: no selftest.mp4"); return }
+        // Exports normally happen from the (silent) editor: keep the home purr off during the test.
+        com.amiri.cut.ui.theme.CatSounds.purrOn = false
+        com.amiri.cut.ui.theme.CatSounds.stopPurr()
         CoroutineScope(Dispatchers.Main).launch {
             try {
                 val a = MediaProbe.probe(app, Uri.fromFile(src)) ?: run { Log.e(TAG, "RESULT FAILED probe"); return@launch }
