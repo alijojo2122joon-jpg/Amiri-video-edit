@@ -2,7 +2,7 @@
 # Installs the release APK on the emulator and runs the in-app export self-test.
 set -x
 PKG=com.amiri.cut
-APK=$(ls apk/*.apk | head -1)
+APK=$(ls apk/*x86_64*.apk 2>/dev/null | head -1); [ -n "$APK" ] || APK=$(ls apk/*.apk | head -1)
 adb install -r -g "$APK" || { echo "::error::install failed"; exit 1; }
 adb shell mkdir -p /sdcard/Android/data/$PKG/files
 adb push .github/testdata/selftest.mp4 /sdcard/Android/data/$PKG/files/selftest.mp4

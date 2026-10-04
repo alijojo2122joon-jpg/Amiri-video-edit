@@ -91,7 +91,7 @@ jobs:
         run: |
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           TAG="v${VERSION}-build${{ github.run_number }}"
-          cp app/build/outputs/apk/release/app-release.apk "AmiriCut-${VERSION}.apk"
+          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk "AmiriCut-${VERSION}.apk"
           gh release create "$TAG" "AmiriCut-${VERSION}.apk" \
             --title "Amiri Cut ${VERSION} (build ${{ github.run_number }})" \
             --notes "Automatic build from ${{ github.sha }}. Install AmiriCut-${VERSION}.apk on your phone." \

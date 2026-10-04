@@ -13,11 +13,20 @@ android {
         applicationId = "com.amiri.cut"
         minSdk = 29
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.9.4"
+        versionCode = 19
+        versionName = "0.9.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Phones (arm64) and the emulator used for automatic tests (x86_64).
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    // One APK per CPU type: arm64 for phones, x86_64 only for the automatic emulator test.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
+        }
     }
 
     signingConfigs {
