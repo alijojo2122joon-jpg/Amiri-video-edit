@@ -322,7 +322,18 @@ private fun RotoPanel(c: EditorController) {
         }
         // Sliders
         LabeledSlider("Brush", c.rotoBrush, 0.005f..0.30f, "${"%.1f".format(c.rotoBrush * 100)}%") { c.rotoBrush = it }
-        if (c.rotoMode == RotoBrushMode.HAIR) {
+        if (c.rotoMode == RotoBrushMode.SMART || c.rotoMode == RotoBrushMode.SMART_CUT) {
+            LabeledSlider("Edge softness", c.rotoSoftness, 0f..1f, "${(c.rotoSoftness * 100).toInt()}%") { c.rotoSoftness = it }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 2.dp)) {
+                ToggleChip("🧠 AI person assist", c.rotoAiAssist) { c.rotoAiAssist = !c.rotoAiAssist }
+                ToggleChip("Smart tracking", c.rotoSmartTrack) { c.rotoSmartTrack = !c.rotoSmartTrack }
+            }
+            Text(
+                if (c.rotoBusy) "Finding the edges…"
+                else "Scribble a quick line on the subject — the selection grows to its real edges by itself. Use Smart remove on anything extra. Raise softness for hair and fur.",
+                color = if (c.rotoBusy) accent else Amiri.TextTertiary, fontSize = 10.sp,
+            )
+        } else if (c.rotoMode == RotoBrushMode.HAIR) {
             LabeledSlider("Detail", c.rotoHairRadius, 4f..30f, "${c.rotoHairRadius.toInt()} px") { c.rotoHairRadius = it }
             LabeledSlider("Edge", c.rotoHairContrast, 0.5f..3f, "${"%.1f".format(c.rotoHairContrast)}×") { c.rotoHairContrast = it }
             Text(

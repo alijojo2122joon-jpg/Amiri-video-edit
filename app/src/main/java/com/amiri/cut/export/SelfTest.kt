@@ -82,6 +82,23 @@ object SelfTest {
                         "in=%.4f out=%.4f n=%d rate=%d ms=%d".format(rms(pcm.data), rms(o), pcm.data.size, pcm.rate, System.currentTimeMillis() - t0)
                     }
                 }
+                // Smart roto: segment a centre stroke on frame 0, then track 10 frames.
+                val roto = runCatching {
+                    kotlinx.coroutines.withContext(Dispatchers.Default) {
+                        val t0 = System.currentTimeMillis()
+                        var w0 = 0; var h0 = 0; var first: FloatArray? = null
+                        com.amiri.cut.media.GrayVideo(app, a, 640, rgb = true).use { gv -> w0 = gv.w; h0 = gv.h
+                            gv.scanRgb(listOf(0L), { false }) { _, px ->
+                                val img = com.amiri.cut.core.vision.Segment.Image.fromArgb(px, gv.w, gv.h)
+                                val st = BooleanArray(gv.w * gv.h) { i -> val x = i % gv.w; val y = i / gv.w; kotlin.math.abs(y - gv.h / 2) < 6 && kotlin.math.abs(x - gv.w / 2) < gv.w / 8 }
+                                first = com.amiri.cut.core.vision.SmartRoto.stroke(img, null, st, true); true } }
+                        val f = first!!
+                        val t1 = System.currentTimeMillis()
+                        val res = com.amiri.cut.media.RotoSmart.propagate(app, a, com.amiri.cut.media.RotoSmart.bitmap(f, w0, h0), 0L, 333_333L, 33_333L, 0.45f, { false }, {})
+                        "size=${w0}x$h0 strokeMs=${t1 - t0} area=%.3f tracked=${res.size} msPerFrame=${(System.currentTimeMillis() - t1) / res.size.coerceAtLeast(1)}".format(f.count { it > 0.5f }.toFloat() / f.size)
+                    }
+                }
+                Log.i(TAG, "ROTO ${roto.getOrNull()} error=${roto.exceptionOrNull()}")
                 Log.i(TAG, "DENOISE ${dn.getOrNull()} error=${dn.exceptionOrNull()}")
                 Log.i(TAG, "CUTOUT available=${com.amiri.cut.media.AutoCutout.available(app)} result=${cut.getOrNull()} error=${cut.exceptionOrNull()}")
                 var waited = 0

@@ -469,7 +469,13 @@ class EditorController(
 
     data class RotoTarget(val track: Track, val clip: Clip, val asset: MediaAsset)
 
-    var rotoMode by mutableStateOf(RotoBrushMode.ADD)
+    var rotoMode by mutableStateOf(RotoBrushMode.SMART)
+    /** Smart brush: use the on-device person model as a hint. */
+    var rotoAiAssist by mutableStateOf(false)
+    /** Smart edge softness 0 (crisp) .. 1 (soft, for hair/fur). */
+    var rotoSoftness by mutableFloatStateOf(0.45f)
+    /** Propagate with the smart tracker (motion + edge re-segmentation) instead of plain shift. */
+    var rotoSmartTrack by mutableStateOf(true)
     /** Brush diameter as a fraction of the frame width. */
     var rotoBrush by mutableFloatStateOf(0.07f)
     /** Edge feather as a fraction of the frame width. */
@@ -487,6 +493,9 @@ class EditorController(
     /** Off while painting: full frame with the mask tinted; on: background removed. */
     var rotoShowResult by mutableStateOf(false)
     var rotoProgress by mutableStateOf<Float?>(null)
+        private set
+    /** A smart stroke is being computed. */
+    var rotoBusy by mutableStateOf(false)
         private set
     /** Bumped whenever a mask image changes (overlay redraw). */
     var rotoVersion by mutableIntStateOf(0)
@@ -556,7 +565,25 @@ class EditorController(
                 val fresh = project?.clip(t.clip.id)?.let { t.copy(clip = it) } ?: return@withLock
                 val base = fresh.clip.roto?.keyAt(src)?.let { app.roto.load(projectId, it.file) }
                 val (w, h) = maskSize(t.asset)
-                val bmp = if (mode == RotoBrushMode.HAIR) {
+                val smart = mode == RotoBrushMode.SMART || mode == RotoBrushMode.SMART_CUT
+                val bmp = if (smart) {
+                    val frame = rotoFrame(fresh, src, w, h)
+                    if (frame == null) { toast = Toast("Couldn't read this frame"); return@withLock }
+                    rotoBusy = true
+                    try {
+                        val soft = rotoSoftness
+                        val ai = rotoAiAssist
+                        withContext(Dispatchers.Default) {
+                            val img = com.amiri.cut.media.RotoSmart.image(frame)
+                            val prev = base?.let { com.amiri.cut.media.RotoSmart.alpha(it, w, h) }
+                            val st = RotoPainter.paint(null, w, h, points, RotoBrushMode.ADD, size, 0f).let { com.amiri.cut.media.RotoSmart.alpha(it, w, h) }
+                                .let { a -> BooleanArray(a.size) { a[it] > 0.5f } }
+                            val prior = if (ai) com.amiri.cut.media.AutoCutout.confidence(app, frame) else null
+                            val m = com.amiri.cut.core.vision.SmartRoto.stroke(img, prev, st, mode == RotoBrushMode.SMART, prior, soft)
+                            com.amiri.cut.media.RotoSmart.bitmap(m, w, h)
+                        }
+                    } finally { rotoBusy = false }
+                } else if (mode == RotoBrushMode.HAIR) {
                     val frame = rotoFrame(fresh, src, w, h)
                     if (frame == null) { toast = Toast("Couldn't read this frame"); return@withLock }
                     val radius = rotoHairRadius.toInt()
@@ -588,8 +615,13 @@ class EditorController(
                 val frame = rotoFrame(t, src, base.width, base.height)
                 val radius = rotoHairRadius.toInt()
                 val contrast = rotoHairContrast
+                val soft = rotoSoftness
                 val refined = withContext(Dispatchers.Default) {
-                    if (frame != null) {
+                    if (frame != null && rotoSmartTrack) {
+                        val w = base.width; val h = base.height
+                        val a = com.amiri.cut.media.RotoSmart.alpha(base, w, h)
+                        com.amiri.cut.media.RotoSmart.bitmap(com.amiri.cut.core.vision.SmartRoto.refine(com.amiri.cut.media.RotoSmart.image(frame), a, soft, 0.012f), w, h)
+                    } else if (frame != null) {
                         val band = com.amiri.cut.media.RotoMatting.edgeBand(base, 4)
                         com.amiri.cut.media.RotoMatting.refine(frame, base, band, radius, contrast)
                     } else RotoPropagator.refineEdge(base, radius = 3, softness = 0.35f)
@@ -648,11 +680,26 @@ class EditorController(
         if (end <= src0) { toast = Toast("Nothing to propagate after this frame"); return }
         engine.pause()
         rotoJob?.cancel()
+        val smartTrack = rotoSmartTrack
+        val soft = rotoSoftness
         rotoJob = scope.launch {
             rotoProgress = 0f
             val job = coroutineContext[Job]
             val results = withContext(Dispatchers.Default) {
-                RotoPropagator.propagate(
+                if (smartTrack) {
+                    val r = runCatching {
+                        com.amiri.cut.media.RotoSmart.propagate(
+                            app, t.asset, base, src0, end, step, soft,
+                            isCancelled = { job?.isActive == false },
+                            onProgress = { f -> rotoProgress = f * 0.9f },
+                        )
+                    }.onFailure { android.util.Log.e("AmiriRoto", "smart propagate", it) }.getOrNull()
+                    r?.map { RotoPropagator.Result(it.sourceUs, it.mask) } ?: RotoPropagator.propagate(
+                        app, t.asset, base, src0, end, step,
+                        isCancelled = { job?.isActive == false },
+                        onProgress = { f -> rotoProgress = f * 0.9f },
+                    )
+                } else RotoPropagator.propagate(
                     app, t.asset, base, src0, end, step,
                     isCancelled = { job?.isActive == false },
                     onProgress = { f -> rotoProgress = f * 0.9f },

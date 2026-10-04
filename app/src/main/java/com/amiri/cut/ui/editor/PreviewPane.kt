@@ -679,7 +679,7 @@ private fun RotoOverlay(c: EditorController, p: Project, t: EditorController.Rot
     var touching by remember { mutableStateOf(false) }
     val mask = remember(t.clip.roto, c.rotoVersion, c.rotoSourceUs(t)) { c.currentRotoMask(t) }
     val showTint = !c.rotoShowResult
-    val subtract = c.rotoMode == RotoBrushMode.SUBTRACT || c.rotoMode == RotoBrushMode.LASSO_CUT
+    val subtract = c.rotoMode == RotoBrushMode.SUBTRACT || c.rotoMode == RotoBrushMode.LASSO_CUT || c.rotoMode == RotoBrushMode.SMART_CUT
     val lasso = c.rotoMode == RotoBrushMode.LASSO || c.rotoMode == RotoBrushMode.LASSO_CUT
     val inkColor = if (subtract) Color(0xFFFF5C6C) else accent
 
