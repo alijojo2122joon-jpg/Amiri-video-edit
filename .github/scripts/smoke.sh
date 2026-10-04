@@ -24,4 +24,5 @@ grep "RESULT\|progress" log.txt | tail -5 | emit notice
 head -80 crash.txt | emit error
 grep -E "foreground|failed|FATAL|Exception:" log.txt | head -40 | emit warning
 adb shell ls -l /sdcard/Android/data/$PKG/files/ | emit notice
+adb pull /sdcard/Android/data/$PKG/files/selftest-out.mp4 selftest-out.mp4 || true
 grep -q "RESULT DONE" log.txt

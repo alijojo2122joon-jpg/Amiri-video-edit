@@ -114,3 +114,13 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash .github/scripts/smoke.sh
+      - name: Attach preview frames of the self-test export to the release
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f selftest-out.mp4 ] || exit 0
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          TAG="v${VERSION}-build${{ github.run_number }}"
+          ffmpeg -hide_banner -loglevel error -y -i selftest-out.mp4 -vf "fps=2,scale=180:-1,tile=6x2" -frames:v 1 selftest-frames.png
+          gh release upload "$TAG" selftest-frames.png --clobber || true
