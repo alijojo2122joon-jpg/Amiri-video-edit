@@ -50,7 +50,10 @@ object SelfTest {
                         Effect(newId(), "glow"), Effect(newId(), "wave"),
                     ))
                 } ?: p
-                p = TimelineOps.addText(p, 200_000L, "سلام Amiri", 2_000_000L).first
+                val (pt, txt) = TimelineOps.addText(p, 200_000L, "سلام Amiri Cut", 2_500_000L)
+                p = TimelineOps.updateClip(pt, txt.id) { c -> c.copy(text = c.text?.let { com.amiri.cut.core.text.TextPresets.apply(it, com.amiri.cut.core.text.TextPresets.ALL[0]) }) } ?: pt
+                val (pt2, txt2) = TimelineOps.addText(p, 2_800_000L, "Wave text", 2_000_000L)
+                p = TimelineOps.updateClip(pt2, txt2.id) { c -> c.copy(text = c.text?.let { com.amiri.cut.core.text.TextPresets.apply(it, com.amiri.cut.core.text.TextPresets.ALL[9]) }) } ?: pt2
                 val (p2, shp) = TimelineOps.addPathShape(p, 0, listOf(0.2f, 0.3f, 0f, 0f, 0.1f, 0f, 0.8f, 0.7f, -0.1f, 0f, 0f, 0f), false)
                 p = TimelineOps.updateClip(p2, shp.id) { c -> c.copy(effects = listOf(Effect(newId(), "saber", opts = mapOf("source" to "Layer path")))) } ?: p2
                 p = TimelineOps.addShape(p, 500_000L, ShapeKind.STAR).first

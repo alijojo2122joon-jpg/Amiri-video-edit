@@ -156,6 +156,20 @@ data class TextSpec(
     val bold: Boolean = false,
     val italic: Boolean = false,
     val props: Props = Props(),
+    /** Entrance / exit / loop animation preset ids (TextAnims) or "None". */
+    val animIn: String = "None",
+    val animOut: String = "None",
+    val animLoop: String = "None",
+    /** Entrance / exit durations in seconds, loop speed multiplier. */
+    val inDur: Float = 0.6f,
+    val outDur: Float = 0.6f,
+    val loopSpeed: Float = 1f,
+    /** Liquid-glass background style (GlassStyles) or "None"; its own in/out animations. */
+    val glass: String = "None",
+    val glassIn: String = "None",
+    val glassOut: String = "None",
+    val glassInDur: Float = 0.5f,
+    val glassOutDur: Float = 0.5f,
 )
 
 @Serializable

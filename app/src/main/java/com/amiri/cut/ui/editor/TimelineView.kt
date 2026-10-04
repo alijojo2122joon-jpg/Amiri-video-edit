@@ -79,6 +79,7 @@ import com.amiri.cut.core.model.TrackKind
 import com.amiri.cut.core.time.FrameTime
 import com.amiri.cut.core.timeline.TimelineOps
 import com.amiri.cut.ui.theme.Amiri
+import com.amiri.cut.ui.common.paw
 import com.amiri.cut.ui.theme.Haptics
 import com.amiri.cut.ui.theme.LocalAccent
 import kotlinx.coroutines.Job
@@ -639,11 +640,12 @@ private fun DrawScope.drawTimeline(
             null -> Unit
         }
 
-        // Marker lines
+        // Marker lines (beats thinner and gold)
         for (m in project.markers) {
             val x = geo.xOf(m.timeUs)
             if (x < 0 || x > w) continue
-            drawLine(accent.copy(alpha = 0.22f), Offset(x, rulerH), Offset(x, size.height), 1f)
+            if (m.label == "♪") drawLine(Color(0xFFFFD27A).copy(alpha = 0.18f), Offset(x, rulerH), Offset(x, size.height), 1f)
+            else drawLine(accent.copy(alpha = 0.22f), Offset(x, rulerH), Offset(x, size.height), 1f)
         }
     }
 
@@ -653,6 +655,11 @@ private fun DrawScope.drawTimeline(
     for (m in project.markers) {
         val x = geo.xOf(m.timeUs)
         if (x < -10 || x > w + 10) continue
+        if (m.label == "♪") {
+            // Beat: a small note dot.
+            drawCircle(Color(0xFFFFD27A), 3.2f, Offset(x, rulerH * 0.78f))
+            continue
+        }
         val path = Path().apply {
             moveTo(x - 5f, 2f); lineTo(x + 5f, 2f); lineTo(x + 5f, rulerH * 0.45f); lineTo(x, rulerH * 0.62f); lineTo(x - 5f, rulerH * 0.45f); close()
         }
@@ -670,7 +677,8 @@ private fun DrawScope.drawTimeline(
     // Playhead (fixed at center; the timeline scrolls beneath it)
     val cx = geo.centerX
     drawLine(accent, Offset(cx, rulerH * 0.3f), Offset(cx, size.height), 2f)
-    drawRoundRect(accent, Offset(cx - 5f, 0f), Size(10f, rulerH * 0.55f), CornerRadius(3f, 3f))
+    // Playhead cap: a little paw.
+    paw(Offset(cx, rulerH * 0.36f), rulerH * 0.6f, accent)
 }
 
 private fun DrawScope.drawHatch(o: Offset, s: Size) {

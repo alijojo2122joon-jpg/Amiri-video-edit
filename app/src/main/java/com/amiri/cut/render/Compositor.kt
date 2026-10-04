@@ -130,6 +130,9 @@ class Compositor(private val text: TextRenderer) {
                 continue
             }
             val layer = buildLayer(project, clip, t, cw, ch, src, opt) ?: continue
+            if (clip.kind == ClipKind.TEXT && clip.text?.glass?.let { it != "None" } == true) {
+                if (glassPass(project, clip, layer, t, cw, ch, canvas, spare)) { val tmp = canvas; canvas = spare; spare = tmp }
+            }
             composite(project, clip, layer, t, canvas, spare, cw, ch)
             pool.recycle(layer.fbo)
             val tmp = canvas; canvas = spare; spare = tmp
@@ -195,10 +198,10 @@ class Compositor(private val text: TextRenderer) {
             baseW = sw; baseH = sh
         } else if (clip.kind == ClipKind.TEXT) {
             val spec = clip.text ?: return null
-            val key = text.key(spec, local, cw, ch)
+            val key = text.key(spec, local, cw, ch, clip.durationUs)
             val c = textTex.getOrPut(clip.id) { Cached(0, null) }
             if (c.key != key) {
-                val bmp = text.render(spec, local, cw, ch)
+                val bmp = text.render(spec, local, cw, ch, clip.durationUs)
                 c.tex = Gl.uploadBitmap(bmp, c.tex)
                 c.w = bmp.width; c.h = bmp.height; c.key = key
                 bmp.recycle()
@@ -366,7 +369,8 @@ class Compositor(private val text: TextRenderer) {
         p.mat3v("uInv", inv, samples)
         p.i1("uSamples", samples)
         p.f4("uCrop", tv("cropL"), tv("cropT"), tv("cropR"), tv("cropB"))
-        p.f1("uOpacity", tv("opacity").coerceIn(0f, 1f))
+        val textAlpha = clip.text?.let { com.amiri.cut.core.text.TextAnims.layerXf(it, local, clip.durationUs).alpha } ?: 1f
+        p.f1("uOpacity", (tv("opacity") * textAlpha).coerceIn(0f, 1f))
         p.i1("uBlend", clip.blend.ordinal)
         p.draw()
     }
@@ -411,6 +415,42 @@ class Compositor(private val text: TextRenderer) {
         p.draw()
         pool.recycle(fa); pool.recycle(fb)
         return out
+    }
+
+    private val glassState = com.amiri.cut.core.text.Glass.State()
+    private val glassInv = FloatArray(9)
+
+    /** Draws the text's liquid-glass panel over [canvas] into [out]. */
+    private fun glassPass(project: Project, clip: Clip, layer: Layer, t: Long, cw: Int, ch: Int, canvas: Fbo, out: Fbo): Boolean {
+        val spec = clip.text ?: return false
+        val local = t - clip.startUs
+        fun g(id: String) = spec.props.at(id, local, com.amiri.cut.core.text.Glass.def(id))
+        val st = com.amiri.cut.core.text.Glass.state(spec, local, clip.durationUs, glassState)
+        val op = g("gOpacity") * st.alpha * clip.transform.at("opacity", local, 1f).coerceIn(0f, 1f)
+        if (op <= 0.003f) return false
+        val pn = text.panel(spec, local, cw, ch)
+        LayerMath.inverse(project, clip, t, layer.baseW, layer.baseH, cw, ch, glassInv, 0, textAnim = false)
+        val maxDim = max(cw, ch).toFloat()
+        val blurAmt = g("gBlur") * st.blur
+        val bl = if (blurAmt > 0.01f) blur(canvas, 2f + blurAmt * 0.035f * maxDim) else null
+        out.bind()
+        val p = prog("glass", Shaders.GLASS)
+        p.use()
+        p.tex("uDst", 0, canvas.tex)
+        p.tex("uBlur", 1, bl?.tex ?: canvas.tex)
+        p.mat3v("uInv", glassInv, 1)
+        p.f2("uLayer", layer.baseW, layer.baseH)
+        p.f4("uRect", pn[0], pn[1] + st.dy * pn[5], pn[2] * st.sx, pn[3] * st.sy)
+        p.f1("uRadius", pn[4] * st.radius)
+        p.f2("uCanvas", cw.toFloat(), ch.toFloat())
+        p.f1("uRefract", g("gRefract")); p.f1("uChroma", g("gChroma")); p.f1("uRim", g("gRim")); p.f1("uGloss", g("gGloss"))
+        p.f1("uTintA", g("gTintA")); p.f3("uTint", g("gtr"), g("gtg"), g("gtb"))
+        p.f1("uSat", g("gSat")); p.f1("uBright", g("gBright")); p.f1("uShadow", g("gShadow"))
+        p.f1("uOpacity", op.coerceIn(0f, 1f)); p.f1("uBlurMix", if (bl != null) 1f else 0f)
+        p.f1("uWobble", st.wobble); p.f1("uTime", local / 1_000_000f)
+        p.draw()
+        bl?.let { pool.recycle(it) }
+        return true
     }
 
     fun inverseMatrix(project: Project, clip: Clip, ts: Long, baseW: Float, baseH: Float, cw: Int, ch: Int, dst: FloatArray, off: Int) =
@@ -830,7 +870,7 @@ object LayerMath {
      * Writes the canvas-pixel → layer-uv affine map (column-major mat3) for [clip] at
      * timeline time [ts] into [dst] at [off]. Includes stabilization and track follow.
      */
-    fun inverse(project: Project, clip: Clip, ts: Long, baseW: Float, baseH: Float, cw: Int, ch: Int, dst: FloatArray, off: Int) {
+    fun inverse(project: Project, clip: Clip, ts: Long, baseW: Float, baseH: Float, cw: Int, ch: Int, dst: FloatArray, off: Int, textAnim: Boolean = true) {
         val local = ts - clip.startUs
         fun tv(id: String) = clip.transform.at(id, local, TransformSpec.def(id)).toDouble()
         var px = tv("px")
@@ -853,6 +893,20 @@ object LayerMath {
             if (axes != "X only") py += Wiggle.noise(x, seed + 101, det) * amp
             rot += Wiggle.noise(x, seed + 202, det) * ev("rotAmp")
             scale *= 1.0 + Wiggle.noise(x, seed + 303, det) * ev("scaleAmp")
+        }
+
+        // Whole-text animations (slide, zoom, pop, loops…).
+        var tsx = 1.0
+        var tsy = 1.0
+        if (textAnim) clip.text?.let { sp ->
+            if (com.amiri.cut.core.text.TextAnims.animated(sp)) {
+                val ax = com.amiri.cut.core.text.TextAnims.layerXf(sp, local, clip.durationUs)
+                val em = sp.props.at("size", local, com.amiri.cut.core.effects.TextSpecDefaults.def("size")) * ch * scale
+                px += ax.dx * em / cw
+                py += ax.dy * em / ch
+                tsx = ax.sx.toDouble(); tsy = ax.sy.toDouble()
+                rot += ax.rot
+            }
         }
 
         // Follow another clip's motion track.
@@ -897,8 +951,8 @@ object LayerMath {
             sscale *= st.zoom.toDouble()
         }
 
-        val sx = scale * (if (clip.flipH) -1.0 else 1.0)
-        val sy = scale * (if (clip.flipV) -1.0 else 1.0)
+        val sx = scale * tsx * (if (clip.flipH) -1.0 else 1.0)
+        val sy = scale * tsy * (if (clip.flipV) -1.0 else 1.0)
         val th = Math.toRadians(rot)
         val c = cos(th)
         val s = sin(th)

@@ -463,6 +463,8 @@ private fun KeyMenuSheet(c: EditorController, clipId: String, local: Long) {
                 "◆  Linear" to { c.linearAt(clipId, local) },
                 "■  Hold (jump to next key)" to { c.setInterpAllAt(clipId, local, com.amiri.cut.core.model.Interp.HOLD) },
                 "Curve editor (Keys tool)" to { c.select(clipId); c.activeTool = EditorTool.KEYS },
+                "Copy keyframes here" to { c.select(clipId); c.copyKeyframesAt() },
+                "Paste keyframes at playhead" to { c.select(clipId); c.pasteKeyframesAt() },
                 "Delete keyframe" to { c.deleteKeysAt(clipId, local) },
             )
             actions.forEach { (label, f) ->
@@ -497,6 +499,13 @@ private fun ClipMenuSheet(c: EditorController, clipId: String) {
                 (if (clip.locked) "Unlock clip" else "Lock clip") to { c.toggleClipLock(clip.id) },
             ) + (if (p.trackOfClip(clip.id)?.acceptsVisual == true && p.asset(clip.assetId)?.hasAudio == true && !clip.muted)
                 listOf<Pair<String, () -> Unit>>("Detach audio" to { c.detachAudio(clip.id) }) else emptyList()) + listOf<Pair<String, () -> Unit>>(
+                "Copy effects & style" to { c.copyAttributes(clip.id) },
+            ) + (if (c.clipboard != null) listOf<Pair<String, () -> Unit>>(
+                "Paste effects" to { c.pasteAttributes("effects", clip.id) },
+                "Paste position / scale / rotation" to { c.pasteAttributes("transform", clip.id) },
+                "Paste everything (style + effects)" to { c.pasteAttributes("all", clip.id) },
+            ) else emptyList()) + (if (clip.kind != com.amiri.cut.core.model.ClipKind.TEXT && c.project?.markers?.any { it.label == "♪" } == true)
+                listOf<Pair<String, () -> Unit>>("Cut on beats" to { c.select(clip.id); c.cutOnBeats() }) else emptyList()) + listOf<Pair<String, () -> Unit>>(
                 "Delete" to { c.select(clip.id); c.deleteSelected() },
                 "Ripple delete" to { c.select(clip.id); c.rippleDeleteSelected() },
             )

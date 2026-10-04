@@ -14,13 +14,15 @@ enum class PerformanceMode(val label: String, val workers: Int, val thumbsPerMin
 
 enum class PreviewQuality(val label: String, val scale: Float) { FULL("Full", 1f), HALF("Half", 0.5f), QUARTER("Quarter", 0.25f) }
 
+/** Accent colours, named after cat coats and eyes 🐾. */
 enum class AccentChoice(val label: String, val argb: Long) {
-    ICE("Ice", 0xFF9FC3FF),
-    MINT("Mint", 0xFF8FE3C4),
-    AMBER("Amber", 0xFFF2C47E),
-    ROSE("Rose", 0xFFF2A0B4),
-    VIOLET("Violet", 0xFFB9A6FF),
-    MONO("Mono", 0xFFE6E6EA),
+    GINGER("Ginger", 0xFFF4A261),
+    AMBER("Tabby Honey", 0xFFF2C47E),
+    ROSE("Pink Nose", 0xFFF2A0B4),
+    ICE("Russian Blue", 0xFF9FC3FF),
+    MINT("Green Eyes", 0xFF8FE3C4),
+    VIOLET("Lilac Point", 0xFFB9A6FF),
+    MONO("Tuxedo", 0xFFE6E6EA),
 }
 
 /** App-wide settings, persisted in SharedPreferences and exposed as Compose state. */
@@ -28,7 +30,7 @@ class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("amiri_settings", Context.MODE_PRIVATE)
 
     var accent by mutableStateOf(
-        runCatching { AccentChoice.valueOf(prefs.getString("accent", AccentChoice.ICE.name)!!) }.getOrDefault(AccentChoice.ICE)
+        runCatching { AccentChoice.valueOf(prefs.getString("accent", AccentChoice.GINGER.name)!!) }.getOrDefault(AccentChoice.GINGER)
     )
         private set
 

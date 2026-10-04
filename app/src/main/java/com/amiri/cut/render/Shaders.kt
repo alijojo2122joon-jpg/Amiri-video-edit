@@ -918,6 +918,101 @@ void main() {
 }
 """
 
+    /**
+     * Liquid glass panel (behind text): samples what is behind it (sharp + blurred),
+     * bends it near the edges like a thick lens, adds vibrancy, tint, gloss, a lit rim
+     * and a soft shadow. The panel is a rounded box in the text layer's pixel space.
+     */
+    const val GLASS = COMMON + """
+uniform sampler2D uDst;
+uniform sampler2D uBlur;
+uniform mat3 uInv;
+uniform vec2 uLayer;
+uniform vec4 uRect;
+uniform float uRadius;
+uniform vec2 uCanvas;
+uniform float uRefract;
+uniform float uChroma;
+uniform float uRim;
+uniform float uGloss;
+uniform float uTintA;
+uniform vec3 uTint;
+uniform float uSat;
+uniform float uBright;
+uniform float uShadow;
+uniform float uOpacity;
+uniform float uBlurMix;
+uniform float uWobble;
+uniform float uTime;
+
+vec2 lpos(vec2 canvasPx) {
+  vec3 uv = uInv * vec3(canvasPx, 1.0);
+  return vec2(uv.x * uLayer.x, (1.0 - uv.y) * uLayer.y) - uRect.xy;
+}
+float sdBox(vec2 p) {
+  vec2 b = uRect.zw;
+  if (uWobble > 0.0) {
+    float a = atan(p.y, p.x);
+    b *= 1.0 + uWobble * 0.06 * sin(a * 3.0 + uTime * 9.0);
+  }
+  float r = min(uRadius, min(b.x, b.y));
+  vec2 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+void main() {
+  vec2 px = vUv * uCanvas;
+  vec2 p = lpos(px);
+  float d = sdBox(p);
+  float ddx = sdBox(lpos(px + vec2(1.0, 0.0))) - d;
+  float ddy = sdBox(lpos(px + vec2(0.0, 1.0))) - d;
+  float g = max(length(vec2(ddx, ddy)), 1e-4);
+  float dc = d / g;
+  vec2 n = vec2(ddx, ddy) / g;
+  float halfMin = min(uRect.z, uRect.w) / g;
+  vec4 base = texture2D(uDst, vUv);
+
+  // Soft shadow under the panel (outside only).
+  float shR = halfMin * 0.7 + 6.0;
+  float ds = sdBox(lpos(px + vec2(0.0, shR * 0.35))) / g;
+  float shadow = uShadow * 0.6 * (1.0 - smoothstep(-shR * 0.3, shR, ds));
+  float cover = (1.0 - smoothstep(-1.0, 1.0, dc)) * uOpacity;
+  base.rgb *= 1.0 - shadow * uOpacity * (1.0 - cover);
+  base.a = max(base.a, shadow * uOpacity * (1.0 - cover));
+  if (dc > 1.5) { gl_FragColor = base; return; }
+
+  float inside = max(-dc, 0.0);
+  float edge = clamp(inside / (halfMin * 0.65 + 1.0), 0.0, 1.0);
+  float bend = pow(1.0 - edge, 2.5) * uRefract * halfMin * 0.55;
+  vec2 off = -n * bend / uCanvas;
+  vec2 ca = n * uChroma * pow(1.0 - edge, 2.0) * (2.0 + halfMin * 0.05) / uCanvas;
+  vec2 u0 = clamp(vUv + off, 0.0, 1.0);
+  vec2 ur = clamp(u0 + ca, 0.0, 1.0);
+  vec2 ub = clamp(u0 - ca, 0.0, 1.0);
+  vec3 col;
+  col.r = mix(texture2D(uDst, ur).r, texture2D(uBlur, ur).r, uBlurMix);
+  col.g = mix(texture2D(uDst, u0).g, texture2D(uBlur, u0).g, uBlurMix);
+  col.b = mix(texture2D(uDst, ub).b, texture2D(uBlur, ub).b, uBlurMix);
+
+  float L = luma(col);
+  col = mix(vec3(L), col, 1.0 + uSat * 0.8);
+  col += uBright * 0.25;
+  col = mix(col, uTint, uTintA);
+  // Gloss: a soft highlight on the upper part.
+  float ry = p.y / max(uRect.w, 1.0);
+  col += uGloss * 0.22 * smoothstep(0.2, -0.95, ry) * (0.6 + 0.4 * (1.0 - edge));
+  // Lit rim (light from the top-left), weaker on the far side.
+  vec2 lightDir = normalize(vec2(-0.6, 0.8));
+  float rimW = 1.5 + halfMin * 0.05;
+  float rim = exp(-inside / rimW);
+  float lit = 0.25 + 0.75 * max(dot(n, lightDir), 0.0) + 0.35 * max(dot(n, -lightDir), 0.0);
+  col += vec3(rim * uRim * lit * 0.85);
+  // Depth: slightly darker just inside the edge.
+  col *= 1.0 - 0.1 * pow(1.0 - edge, 3.0) * uRefract;
+  vec3 glass = clamp(col, 0.0, 1.0);
+  gl_FragColor = vec4(mix(base.rgb, glass, cover), max(base.a, cover));
+}
+"""
+
     /** Copies a bitmap texture (y down) into an FBO (y up). */
     const val COPY_FLIP = COMMON + """
 uniform sampler2D uTex;

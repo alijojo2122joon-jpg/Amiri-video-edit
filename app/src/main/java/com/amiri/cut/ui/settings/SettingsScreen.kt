@@ -83,15 +83,16 @@ fun SettingsScreen(app: AmiriCutApp, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(22.dp),
             ) {
                 Column {
-                    SectionLabel("Accent")
-                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    SectionLabel("Cat coat (accent) · ${s.accent.label}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         AccentChoice.entries.forEach { a ->
                             val c = Color(a.argb)
                             Box(
-                                Modifier.size(34.dp).background(c.copy(alpha = 0.85f), CircleShape)
-                                    .border(if (a == s.accent) 2.dp else 1.dp, if (a == s.accent) Color.White else Color.White.copy(alpha = 0.15f), CircleShape)
+                                Modifier.size(38.dp).background(c.copy(alpha = if (a == s.accent) 0.28f else 0.1f), CircleShape)
+                                    .border(if (a == s.accent) 2.dp else 1.dp, if (a == s.accent) c else Color.White.copy(alpha = 0.12f), CircleShape)
                                     .clickable { s.updateAccent(a) },
-                            )
+                                contentAlignment = Alignment.Center,
+                            ) { com.amiri.cut.ui.common.PawPrint(Modifier.size(22.dp), c) }
                         }
                     }
                 }

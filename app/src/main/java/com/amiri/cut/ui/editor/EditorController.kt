@@ -1069,6 +1069,133 @@ class EditorController(
 
     fun trackForward() = track(1)
 
+    /** Plays the selected text clip from its start (to see its entrance). */
+    fun previewTextFromStart() {
+        val c = selectedClip() ?: return
+        engine.seekTo(c.startUs); engine.play()
+    }
+
+    /** Plays the last seconds of the selected text clip (to see its exit). */
+    fun previewTextEnd() {
+        val c = selectedClip() ?: return
+        val d = (c.text?.outDur ?: 0.6f).coerceAtLeast(c.text?.glassOutDur ?: 0f)
+        engine.seekTo((c.endUs - (d * 1_000_000).toLong() - 500_000L).coerceAtLeast(c.startUs)); engine.play()
+    }
+
+    // ═════════════════════════ Beat sync ═════════════════════════
+
+    /** Finds the beats of the selected sound (audio clip or video with sound) and marks them on the timeline. */
+    fun detectBeats(mode: com.amiri.cut.core.audio.BeatMath.Mode) {
+        val c = selectedClip() ?: run { toast = Toast("Select a music clip (or a video with sound)"); return }
+        val p = project ?: return
+        val a = p.asset(c.assetId)?.takeIf { it.hasAudio } ?: run { toast = Toast("This clip has no sound"); return }
+        runBusy("Finding beats") { cancel, prog ->
+            val r = withContext(Dispatchers.Default) {
+                com.amiri.cut.media.BeatDetector.detect(app, a.uri, c.sourceInUs, c.sourceOutUs, mode, { cancel.get() }, prog)
+            }
+            if (r.times.isEmpty()) { toast = Toast("No clear beat found"); return@runBusy }
+            val cur = project ?: return@runBusy
+            val cl = cur.clip(c.id) ?: return@runBusy
+            val times = r.times.map { src -> cl.startUs + cl.sourceToTimeline((src * 1_000_000).toLong() - cl.sourceInUs) }
+                .filter { it in cl.startUs until cl.endUs }
+            commit("Beat markers", TimelineOps.setBeatMarkers(cur, times, cl.startUs, cl.endUs))
+            toast = Toast("${times.size} beats marked" + (if (r.bpm > 0) " · ${r.bpm.toInt()} BPM" else "") + " — clips snap to them")
+        }
+    }
+
+    fun clearBeatMarkers() {
+        val p = project ?: return
+        commit("Clear beat markers", p.copy(markers = p.markers.filterNot { it.label == "♪" }))
+    }
+
+    /** Cuts the selected clip at every beat marker inside it. */
+    fun cutOnBeats() {
+        val p = project ?: return
+        val id = selectedClipId ?: run { toast = Toast("Select the clip to cut"); return }
+        val np = TimelineOps.splitAtMarkers(p, id) ?: run { toast = Toast("No beat markers inside this clip — find beats first"); return }
+        commit("Cut on beats", np)
+        toast = Toast("Cut on the beats")
+    }
+
+    // ═════════════════════════ Copy / paste ═════════════════════════
+
+    /** Copied layer attributes (a clip snapshot). */
+    var clipboard by mutableStateOf<Clip?>(null)
+    /** Copied keyframe values: (target kind, param id) → value. */
+    private var keyClipboard: List<Triple<String, String, Float>> = emptyList()
+
+    fun copyAttributes(clipId: String? = selectedClipId) {
+        val c = project?.clip(clipId ?: return) ?: return
+        clipboard = c
+        toast = Toast("Copied effects & style of ${c.name}")
+    }
+
+    /** What: "effects", "transform", "all". */
+    fun pasteAttributes(what: String, clipId: String? = selectedClipId) {
+        val src = clipboard ?: run { toast = Toast("Copy a layer first"); return }
+        val p = project ?: return
+        val id = clipId ?: return
+        val np = TimelineOps.updateClip(p, id) { c ->
+            val fx = src.effects.map { it.copy(id = com.amiri.cut.core.model.newId()) }
+            when (what) {
+                "effects" -> c.copy(effects = c.effects + fx)
+                "transform" -> c.copy(transform = src.transform, blend = src.blend, flipH = src.flipH, flipV = src.flipV)
+                else -> c.copy(
+                    effects = fx, transform = src.transform, blend = src.blend, flipH = src.flipH, flipV = src.flipV,
+                    masks = if (c.kind == src.kind) src.masks.map { it.copy(id = com.amiri.cut.core.model.newId()) } else c.masks,
+                    text = if (c.text != null && src.text != null) src.text.copy(text = c.text.text) else c.text,
+                    shape = if (c.shape != null && src.shape != null) src.shape else c.shape,
+                    audio = src.audio,
+                )
+            }
+        } ?: return
+        commit("Paste ${what}", np)
+        toast = Toast("Pasted")
+    }
+
+    /** Copies every keyframed value of the selected clip at the playhead. */
+    fun copyKeyframesAt() {
+        val c = selectedClip() ?: return
+        val lt = localTime(c.id)
+        val tol = keyTolerance()
+        val out = ArrayList<Triple<String, String, Float>>()
+        fun grab(kind: String, pr: com.amiri.cut.core.model.Props) = pr.p.forEach { (id, prm) -> if (prm.keyNear(lt, tol) != null) out += Triple(kind, id, prm.at(lt)) }
+        grab("transform", c.transform)
+        c.text?.let { grab("text", it.props) }
+        c.shape?.let { grab("shape", it.props) }
+        grab("audio", c.audio)
+        c.effects.forEach { e -> grab("fx:" + e.type, e.props) }
+        keyClipboard = out
+        toast = Toast(if (out.isEmpty()) "No keyframes at the playhead" else "Copied ${out.size} keyframes")
+    }
+
+    /** Pastes copied keyframe values as keys at the playhead (on matching parameters). */
+    fun pasteKeyframesAt() {
+        val c = selectedClip() ?: return
+        if (keyClipboard.isEmpty()) { toast = Toast("Copy keyframes first"); return }
+        val p = project ?: return
+        val lt = localTime(c.id)
+        val tol = keyTolerance()
+        fun put(pr: com.amiri.cut.core.model.Props, kind: String): com.amiri.cut.core.model.Props {
+            var r = pr
+            for ((k, id, v) in keyClipboard) if (k == kind) {
+                val prm = r.p[id] ?: com.amiri.cut.core.model.Param(v)
+                r = r.with(id, prm.withKey(lt, v, tol))
+            }
+            return r
+        }
+        val np = TimelineOps.updateClip(p, c.id) { cl ->
+            cl.copy(
+                transform = put(cl.transform, "transform"), audio = put(cl.audio, "audio"),
+                text = cl.text?.let { it.copy(props = put(it.props, "text")) },
+                shape = cl.shape?.let { it.copy(props = put(it.props, "shape")) },
+                effects = cl.effects.map { e -> e.copy(props = put(e.props, "fx:" + e.type)) },
+            )
+        } ?: return
+        commit("Paste keyframes", np)
+        toast = Toast("Keyframes pasted")
+    }
+
     // ═════════════════════════ Layer effect strip ═════════════════════════
 
     fun toggleLayerItem(clipId: String, key: String) {

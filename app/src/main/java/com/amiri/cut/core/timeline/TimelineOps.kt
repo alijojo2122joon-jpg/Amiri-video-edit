@@ -327,6 +327,29 @@ object TimelineOps {
 
     fun removeMarker(p: Project, markerId: String): Project = p.copy(markers = p.markers.filterNot { it.id == markerId })
 
+    /** Adds beat markers (label "♪") at timeline times [timesUs], replacing old beat markers in that range. */
+    fun setBeatMarkers(p: Project, timesUs: List<Long>, fromUs: Long, toUs: Long): Project {
+        val keep = p.markers.filterNot { it.label == "♪" && it.timeUs in fromUs..toUs }
+        val fresh = timesUs.map { FrameTime.quantize(it, p.settings.fps) }.distinct()
+            .filter { t -> keep.none { it.timeUs == t } }.map { Marker(newId(), it, "♪") }
+        return p.copy(markers = (keep + fresh).sortedBy { it.timeUs })
+    }
+
+    /** Splits [clipId] at every marker strictly inside it. Returns null if nothing was cut. */
+    fun splitAtMarkers(p: Project, clipId: String, beatsOnly: Boolean = true): Project? {
+        var proj = p
+        var cur = p.clip(clipId) ?: return null
+        var any = false
+        val f = frame(p.settings.fps)
+        for (m in p.markers.sortedBy { it.timeUs }) {
+            if (beatsOnly && m.label != "♪") continue
+            if (m.timeUs - cur.startUs < f || cur.endUs - m.timeUs < f) continue
+            val r = split(proj, cur.id, m.timeUs) ?: continue
+            proj = r.first; cur = r.second; any = true
+        }
+        return if (any) proj else null
+    }
+
     // ───────────────────────── navigation & snapping ─────────────────────────
 
     /** All clip boundaries + 0 + markers, sorted & distinct. */

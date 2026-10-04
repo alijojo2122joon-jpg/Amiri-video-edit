@@ -23,11 +23,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.LibraryMusic
@@ -128,7 +131,10 @@ internal fun BusyBar(c: EditorController, b: EditorController.Busy) {
     val accent = LocalAccent.current
     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("${b.label} ${(b.progress * 100).toInt()}%", color = Amiri.TextPrimary, fontSize = 12.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${b.label} ${(b.progress * 100).toInt()}%", color = Amiri.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                com.amiri.cut.ui.common.PawSteps(Modifier.size(width = 70.dp, height = 14.dp), accent)
+            }
             LinearProgressIndicator(
                 progress = { b.progress }, color = accent, trackColor = Amiri.SurfaceHigh,
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(4.dp).clip(RoundedCornerShape(2.dp)),
@@ -673,13 +679,126 @@ internal fun TextPanel(c: EditorController) {
             ToggleChip("Bold", spec.bold) { c.updateText("Bold") { it.copy(bold = !it.bold) } }
             ToggleChip("Italic", spec.italic) { c.updateText("Italic") { it.copy(italic = !it.italic) } }
         }
-        KeyframeBar(c, clip)
         val t = EditorController.PTarget.Text(clip.id)
-        SectionTitle("Style")
-        TextSpecDefaults.STYLE.forEach { ParamRow(c, t, it) }
-        SectionTitle("Colors")
-        TextSpecDefaults.COLORS.forEach { (pre, label, def) -> ColorRow(c, t, Triple("${pre}r", "${pre}g", "${pre}b"), label, def) }
+        var tab by remember { mutableStateOf("Presets") }
+        ChoiceChips(listOf("Presets", "Animate", "Glass", "Style", "Colors"), tab, { it }, Modifier.padding(top = 8.dp)) { tab = it }
+        when (tab) {
+            "Presets" -> {
+                Hint("Ready-made looks: style + animations + liquid glass. Your words and font stay.")
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.amiri.cut.core.text.TextPresets.ALL.forEach { pr ->
+                        TextPresetCard(pr.name, pr.glass != "None") { c.updateText("Text preset ${pr.name}") { com.amiri.cut.core.text.TextPresets.apply(it, pr) }; c.previewTextFromStart() }
+                    }
+                }
+            }
+            "Animate" -> TextAnimEditor(c, spec)
+            "Glass" -> TextGlassEditor(c, clip.id, spec)
+            "Style" -> {
+                KeyframeBar(c, clip)
+                TextSpecDefaults.STYLE.forEach { ParamRow(c, t, it) }
+            }
+            "Colors" -> TextSpecDefaults.COLORS.forEach { (pre, label, def) -> ColorRow(c, t, Triple("${pre}r", "${pre}g", "${pre}b"), label, def) }
+        }
         Hint("Position, scale, rotation and opacity of the text: use the Transform tool (or drag on the preview).")
+    }
+}
+
+/** The bundled cat photo used to preview looks (loaded once). */
+private object LookPreview {
+    @Volatile var cat: android.graphics.Bitmap? = null
+    val cache = java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+    fun base(ctx: android.content.Context): android.graphics.Bitmap? = cat ?: runCatching {
+        ctx.assets.open("preview/cat.jpg").use { android.graphics.BitmapFactory.decodeStream(it) }
+    }.getOrNull()?.let { b -> android.graphics.Bitmap.createScaledBitmap(b, 120, 128, true).also { cat = it } }
+}
+
+/** A look shown on the cat photo, so you see the colors before choosing it. */
+@Composable
+private fun LookCard(name: String?, selected: Boolean, onClick: () -> Unit) {
+    val ctx = LocalContext.current
+    val accent = LocalAccent.current
+    val key = name ?: "None"
+    val img by androidx.compose.runtime.produceState(LookPreview.cache[key], key) {
+        if (value == null) value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val b = LookPreview.base(ctx) ?: return@withContext null
+            val out = if (name == null) b else com.amiri.cut.render.ColorMath.apply(b, com.amiri.cut.render.ColorMath.lookParams(name))
+            out.asImageBitmap().also { LookPreview.cache[key] = it }
+        }
+    }
+    Column(Modifier.width(76.dp).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(width = 72.dp, height = 78.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.Surface)
+                .border(if (selected) 2.dp else 0.5.dp, if (selected) accent else Color.White.copy(alpha = 0.15f), RoundedCornerShape(14.dp)),
+        ) {
+            img?.let { androidx.compose.foundation.Image(it, name ?: "Original", Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+        }
+        Text(name ?: "Original", color = if (selected) accent else Amiri.TextSecondary, fontSize = 10.sp, maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+    }
+}
+
+@Composable
+private fun TextPresetCard(name: String, glass: Boolean, onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    Box(
+        Modifier.size(width = 104.dp, height = 58.dp).clip(RoundedCornerShape(14.dp))
+            .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFF2B4A3A), Color(0xFF1B2A44))))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (glass) Box(Modifier.size(width = 84.dp, height = 28.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.18f))
+            .border(1.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(50)))
+        Text(name, color = Color.White, fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(5.dp).clip(CircleShape).background(accent))
+    }
+}
+
+@Composable
+private fun AnimPicker(title: String, current: String, list: List<com.amiri.cut.core.text.TextAnimSpec>, groups: List<String>?, onPick: (String) -> Unit) {
+    SectionTitle(title)
+    var group by remember(title) { mutableStateOf(list.firstOrNull { it.id == current }?.group ?: groups?.firstOrNull() ?: "") }
+    if (groups != null) ChoiceChips(groups, group, { it }) { group = it }
+    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp)) {
+        ToggleChip("None", current == "None") { onPick("None") }
+        list.filter { groups == null || it.group == group }.forEach { a -> ToggleChip(a.label, current == a.id) { onPick(a.id) } }
+    }
+}
+
+@Composable
+private fun TextAnimEditor(c: EditorController, spec: com.amiri.cut.core.model.TextSpec) {
+    val A = com.amiri.cut.core.text.TextAnims
+    Column {
+        AnimPicker("In", spec.animIn, A.ENTER, A.GROUPS) { id -> c.updateText("Text in: $id") { it.copy(animIn = id) }; c.previewTextFromStart() }
+        if (spec.animIn != "None") LabeledSlider("In duration", spec.inDur, 0.1f..3f, "${"%.1f".format(spec.inDur)} s") { v -> c.updateText("In duration") { it.copy(inDur = v) } }
+        AnimPicker("Out", spec.animOut, A.ENTER, A.GROUPS) { id -> c.updateText("Text out: $id") { it.copy(animOut = id) }; c.previewTextEnd() }
+        if (spec.animOut != "None") LabeledSlider("Out duration", spec.outDur, 0.1f..3f, "${"%.1f".format(spec.outDur)} s") { v -> c.updateText("Out duration") { it.copy(outDur = v) } }
+        AnimPicker("Loop", spec.animLoop, A.LOOP, null) { id -> c.updateText("Text loop: $id") { it.copy(animLoop = id) }; c.previewTextFromStart() }
+        if (spec.animLoop != "None") LabeledSlider("Loop speed", spec.loopSpeed, 0.2f..3f, "${"%.1f".format(spec.loopSpeed)}×") { v -> c.updateText("Loop speed") { it.copy(loopSpeed = v) } }
+        Row { PanelAction(Icons.Outlined.PlayArrow, "Preview") { c.previewTextFromStart() } }
+        Hint("Letter and word animations keep Persian letters joined. Exits play the same moves backwards.")
+    }
+}
+
+@Composable
+private fun TextGlassEditor(c: EditorController, clipId: String, spec: com.amiri.cut.core.model.TextSpec) {
+    val G = com.amiri.cut.core.text.Glass
+    val t = EditorController.PTarget.Text(clipId)
+    Column {
+        SectionTitle("Liquid glass background")
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            ToggleChip("None", spec.glass == "None") { c.updateText("Glass off") { com.amiri.cut.core.text.TextPresets.withGlass(it, "None") } }
+            G.STYLES.forEach { (name, _) -> ToggleChip(name, spec.glass == name) { c.updateText("Glass $name") { com.amiri.cut.core.text.TextPresets.withGlass(it, name) } } }
+        }
+        if (spec.glass == "None") { Hint("Real glass: it blurs and bends whatever is behind the text, with a lit rim, gloss and soft shadow — like iOS liquid glass."); return@Column }
+        SectionTitle("Glass in")
+        Row(Modifier.horizontalScroll(rememberScrollState())) { G.ANIMS.forEach { a -> ToggleChip(a, spec.glassIn == a) { c.updateText("Glass in $a") { it.copy(glassIn = a) }; c.previewTextFromStart() } } }
+        if (spec.glassIn != "None") LabeledSlider("In duration", spec.glassInDur, 0.1f..3f, "${"%.1f".format(spec.glassInDur)} s") { v -> c.updateText("Glass in duration") { it.copy(glassInDur = v) } }
+        SectionTitle("Glass out")
+        Row(Modifier.horizontalScroll(rememberScrollState())) { G.ANIMS.forEach { a -> ToggleChip(a, spec.glassOut == a) { c.updateText("Glass out $a") { it.copy(glassOut = a) }; c.previewTextEnd() } } }
+        if (spec.glassOut != "None") LabeledSlider("Out duration", spec.glassOutDur, 0.1f..3f, "${"%.1f".format(spec.glassOutDur)} s") { v -> c.updateText("Glass out duration") { it.copy(glassOutDur = v) } }
+        SectionTitle("Glass look")
+        G.PARAMS.forEach { ParamRow(c, t, it) }
+        ColorRow(c, t, Triple("gtr", "gtg", "gtb"), "Glass tint", floatArrayOf(1f, 1f, 1f))
     }
 }
 
@@ -714,6 +833,23 @@ internal fun ColorPanel(c: EditorController) {
             if (lutFx != null) ParamRow(c, EditorController.PTarget.Fx(clip.id, lutFx.id), EffectCatalog.LUT.params[0])
             return@Column
         }
+        if (tab == "Looks") {
+            val fx0 = clip.effects.firstOrNull { it.type == "color" }
+            val cur = fx0?.opts?.get("look")
+            fun pick(name: String?) {
+                val id = fx0?.id ?: c.ensureColorEffect() ?: return
+                c.updateEffect(id, "Look: ${name ?: "none"}") { if (name == null) it.copy(opts = it.opts - "look") else it.copy(opts = it.opts + ("look" to name)) }
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                LookCard(null, cur == null) { pick(null) }
+                com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) -> LookCard(name, cur == name) { pick(name) } }
+            }
+            if (cur != null && fx0 != null) {
+                ParamRow(c, EditorController.PTarget.Fx(clip.id, fx0.id), EffectCatalog.COLOR.param("lookAmt")!!)
+                Hint("“$cur” is added on top of your own adjustments — fine-tune it in Basic, Wheels and HSL. Intensity can be keyframed.")
+            } else Hint("${com.amiri.cut.core.effects.ColorLooks.LOOKS.size} cinematic looks, previewed on the cat 🐾. Tap one, then set its intensity.")
+            return@Column
+        }
         val fx = clip.effects.firstOrNull { it.type == "color" }
         if (fx == null) {
             Row { PanelAction(Icons.Outlined.Add, "Start grading") { c.ensureColorEffect() } }
@@ -721,20 +857,7 @@ internal fun ColorPanel(c: EditorController) {
         }
         val t = EditorController.PTarget.Fx(clip.id, fx.id)
         val spec = EffectCatalog.COLOR
-        if (tab == "Looks") {
-            val cur = fx.opts["look"]
-            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                ToggleChip("None", cur == null) { c.updateEffect(fx.id, "Look: none") { it.copy(opts = it.opts - "look") } }
-                com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) ->
-                    ToggleChip(name, cur == name) { c.updateEffect(fx.id, "Look: $name") { it.copy(opts = it.opts + ("look" to name)) } }
-                }
-            }
-            if (cur != null) {
-                ParamRow(c, t, spec.param("lookAmt")!!)
-                Hint("“$cur” is added on top of your own adjustments — fine-tune it in Basic, Wheels and HSL. Intensity can be keyframed.")
-            } else Hint("Ready-made cinematic looks (Light Nostalgic, Teal & Orange, Golden Hour…). Pick one, then set its intensity.")
-            return@Column
-        }
+
         KeyframeBar(c, clip)
         when (tab) {
             "Basic" -> {
@@ -971,6 +1094,17 @@ internal fun AudioPanel(c: EditorController) {
             if (sel != null) PanelAction(Icons.Outlined.DeleteOutline, "Delete clip") { c.deleteSelected() }
         }
         val clip = c.selectedClip()?.takeIf { cl -> c.project?.asset(cl.assetId)?.hasAudio == true }
+        if (clip != null) {
+            SectionTitle("Beat sync")
+            var mode by remember { mutableStateOf(com.amiri.cut.core.audio.BeatMath.Mode.BEATS) }
+            ChoiceChips(com.amiri.cut.core.audio.BeatMath.Mode.entries.toList(), mode, { it.label }) { mode = it }
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                PanelAction(Icons.Outlined.GraphicEq, "Find beats") { c.detectBeats(mode) }
+                PanelAction(Icons.Outlined.ContentCut, "Cut on beats") { c.cutOnBeats() }
+                PanelAction(Icons.Outlined.DeleteOutline, "Clear beats") { c.clearBeatMarkers() }
+            }
+            Hint("Marks the music's beats (♪) on the timeline. Clips, cuts and keyframes snap to them. Select a video clip and tap Cut on beats to chop it to the rhythm.")
+        }
         if (clip == null) {
             Hint("Sound effects go on their own SFX tracks under the music, at the playhead. You can pick audio files or videos (only the sound is used). Select a clip with sound to set volume, fades, pan and EQ.")
             return@Column

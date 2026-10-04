@@ -70,6 +70,7 @@ fun AmbientBackground(modifier: Modifier = Modifier) {
             radius = size.maxDimension * 0.5f,
             center = Offset(size.width * 0.95f, size.height * 0.75f),
         )
+        pawTrailBackground(accent.copy(alpha = 0.05f))
     }
 }
 

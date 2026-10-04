@@ -53,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -136,12 +137,16 @@ fun HomeScreen(
                     )
                     Column(Modifier.weight(1f).padding(start = 14.dp)) {
                         Text("Amiri Cut", color = Amiri.TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
-                        Text("Offline · Device-powered editor", color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                        Text("Offline editor · made with 🐾", color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall)
                     }
                     IconAction(Icons.Outlined.Settings, "Settings", onClick = onSettings)
                 }
             }
             item {
+                // A cat peeking over the buttons.
+                Row(Modifier.fillMaxWidth().padding(start = 28.dp)) {
+                    com.amiri.cut.ui.common.PeekingCat(Modifier.size(width = 56.dp, height = 30.dp), Color(0xFF2A2A30), LocalAccent.current)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     GlassButton("New Project", Modifier.weight(1f), icon = Icons.Outlined.Add, primary = true, onClick = onNewProject)
                     GlassButton("Open Project", Modifier.weight(1f), icon = Icons.Outlined.FolderOpen) {
@@ -155,11 +160,14 @@ fun HomeScreen(
             when {
                 list == null -> Unit
                 list.isEmpty() -> item {
-                    Text(
-                        "No projects yet. Create one to start editing — everything stays on this device.",
-                        color = Amiri.TextSecondary, style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(vertical = 24.dp),
-                    )
+                    Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        com.amiri.cut.ui.common.SleepingCat(Modifier.size(180.dp, 130.dp), Color(0xFF2C2C33), LocalAccent.current)
+                        Text(
+                            "The cat is napping… no projects yet.\nCreate one — everything stays on this device.",
+                            color = Amiri.TextSecondary, style = MaterialTheme.typography.bodyMedium,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
                 }
                 else -> items(list, key = { it.id }) { p ->
                     ProjectRow(
