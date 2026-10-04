@@ -146,7 +146,11 @@ fun EditorScreen(
 
 @Composable
 private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
-    LaunchedEffect(Unit) { com.amiri.cut.ui.theme.CatSounds.stopPurr() }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        com.amiri.cut.ui.theme.CatSounds.inEditor = true
+        com.amiri.cut.ui.theme.CatSounds.stopPurr()
+        onDispose { com.amiri.cut.ui.theme.CatSounds.inEditor = false }
+    }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Roto needs a big canvas: hide the timeline automatically (toggle with ⤢ in the transport bar).
     LaunchedEffect(c.activeTool) {

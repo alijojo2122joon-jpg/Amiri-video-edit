@@ -21,6 +21,8 @@ object CatSounds {
     @Volatile var soundsOn = true
     @Volatile var purrOn = true
     @Volatile var hapticsOn = true
+    /** In the editor the app stays silent (only the tick vibration remains). */
+    @Volatile var inEditor = false
 
     private var pool: SoundPool? = null
     private val mews = IntArray(4)
@@ -60,7 +62,7 @@ object CatSounds {
 
     /** A very small mew (tap). Throttled so fast tapping doesn't turn into noise. */
     fun mew() {
-        if (!soundsOn) return
+        if (!soundsOn || inEditor) return
         val p = pool ?: return
         val now = System.currentTimeMillis()
         if (now - lastMew < 260) return
@@ -72,7 +74,7 @@ object CatSounds {
 
     /** Soft purr in the background: fades in, purrs for a while, fades out. */
     fun purr(seconds: Float = 7f) {
-        if (!soundsOn || !purrOn) return
+        if (!soundsOn || !purrOn || inEditor) return
         val p = pool ?: return
         // The sample may still be loading on first start: try a few times.
         fun attempt(left: Int) {
