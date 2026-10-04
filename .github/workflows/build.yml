@@ -122,5 +122,7 @@ jobs:
           [ -f selftest-out.mp4 ] || exit 0
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           TAG="v${VERSION}-build${{ github.run_number }}"
-          ffmpeg -hide_banner -loglevel error -y -i selftest-out.mp4 -vf "fps=2,scale=180:-1,tile=6x2" -frames:v 1 selftest-frames.png
+          pip install --quiet imageio-ffmpeg
+          FF=$(python3 -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
+          "$FF" -hide_banner -loglevel error -y -i selftest-out.mp4 -vf "fps=2,scale=180:-1,tile=6x2" -frames:v 1 selftest-frames.png
           gh release upload "$TAG" selftest-frames.png --clobber || true
