@@ -1177,10 +1177,17 @@ class EditorController(
         if (a.type == MediaType.IMAGE) { toast = Toast("Auto cut-out works on videos — for photos use the roto brush"); return }
         runBusy("Auto cut-out") { cancel, prog ->
             val keys = ArrayList<com.amiri.cut.core.model.RotoKey>()
-            val n = withContext(Dispatchers.Default) {
-                com.amiri.cut.media.AutoCutout.run(app, a, times, edgeSoftness, { cancel.get() }, prog) { t, mask ->
-                    keys += com.amiri.cut.core.model.RotoKey(t, app.roto.saveBlocking(projectId, mask))
+            val n = try {
+                withContext(Dispatchers.Default) {
+                    com.amiri.cut.media.AutoCutout.run(app, a, times, edgeSoftness, { cancel.get() }, prog) { t, mask ->
+                        keys += com.amiri.cut.core.model.RotoKey(t, app.roto.saveBlocking(projectId, mask))
+                    }
                 }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e("AmiriCutout", "failed", e)
+                toast = Toast("Auto cut-out isn't supported on this device (${e.javaClass.simpleName})")
+                return@runBusy
             }
             if (n == 0) { toast = Toast("Couldn't analyse this clip"); return@runBusy }
             val cur = project ?: return@runBusy
