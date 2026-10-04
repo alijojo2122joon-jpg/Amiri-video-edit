@@ -82,6 +82,8 @@ object CatSounds {
     fun startPurr() {
         if (!soundsOn || !purrOn || inEditor) return
         if (player != null) return
+        // Stay quiet while a video is being exported.
+        if (com.amiri.cut.export.ExportQueue.jobs.value.any { it.state == com.amiri.cut.export.JobState.RUNNING || it.state == com.amiri.cut.export.JobState.QUEUED }) return
         val ctx = appContext ?: return
         val gen = ++purrGen
         fun playNext() {
