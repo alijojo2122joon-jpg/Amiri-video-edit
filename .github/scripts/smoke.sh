@@ -19,7 +19,8 @@ adb logcat -d -v brief AmiriSelfTest:V AmiriExport:V AndroidRuntime:E '*:S' > lo
 adb logcat -d -b crash > crash.txt
 cat log.txt; cat crash.txt
 emit() { while IFS= read -r l; do echo "::$1::${l//%/%25}"; done; }
-grep "RESULT\|progress\|CUTOUT\|DENOISE" log.txt | tail -7 | emit notice
+grep "RESULT\|progress" log.txt | tail -4 | emit notice
+grep "DENOISE\|CUTOUT" log.txt | emit notice
 [ "$died" = 1 ] && echo "::error::app process died during the self-test"
 head -80 crash.txt | emit error
 grep -E "foreground|failed|FATAL|Exception:" log.txt | head -40 | emit warning
