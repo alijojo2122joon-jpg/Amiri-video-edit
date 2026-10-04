@@ -323,6 +323,9 @@ object AudioSpec {
         ParamSpec("bass", "Bass", -12f, 12f, 0f, 1f, " dB", 1),
         ParamSpec("mid", "Voice / mid", -12f, 12f, 0f, 1f, " dB", 1),
         ParamSpec("treble", "Treble", -12f, 12f, 0f, 1f, " dB", 1),
+        ParamSpec("denoise", "Noise reduction", 0f, 1f, 0f),
+        ParamSpec("enhance", "Voice enhance", 0f, 1f, 0f),
+        ParamSpec("duck", "Auto-duck under voice", 0f, 1f, 0f),
     )
     fun def(id: String): Float = PARAMS.firstOrNull { it.id == id }?.default ?: 0f
 }

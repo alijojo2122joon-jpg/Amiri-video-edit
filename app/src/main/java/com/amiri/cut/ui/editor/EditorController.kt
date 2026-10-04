@@ -1117,6 +1117,102 @@ class EditorController(
         toast = Toast("Cut on the beats")
     }
 
+    // ═════════════════════════ Voice-over ═════════════════════════
+
+    private var recorder: com.amiri.cut.media.VoiceRecorder? = null
+    private var recordFile: java.io.File? = null
+    var recordingStartUs by mutableStateOf<Long?>(null)
+    var recordLevel by mutableFloatStateOf(0f)
+    /** Play the timeline while recording so you can narrate over the picture. */
+    var recordPlayAlong by mutableStateOf(true)
+
+    fun startVoiceRecording() {
+        if (recorder != null) return
+        val p = project ?: return
+        val f = java.io.File(java.io.File(app.filesDir, "voice/${p.id}").apply { mkdirs() }, "voice-${System.currentTimeMillis()}.wav")
+        val r = com.amiri.cut.media.VoiceRecorder(f) { lvl -> scope.launch { recordLevel = lvl } }
+        if (!r.start()) { toast = Toast("Can't record: ${r.error ?: "microphone unavailable"}"); return }
+        recorder = r; recordFile = f
+        recordingStartUs = engine.position.value
+        if (recordPlayAlong) engine.play()
+    }
+
+    fun stopVoiceRecording() {
+        val r = recorder ?: return
+        val start = recordingStartUs ?: 0L
+        engine.pause()
+        recorder = null; recordingStartUs = null; recordLevel = 0f
+        scope.launch {
+            withContext(Dispatchers.IO) { r.stop() }
+            val f = recordFile ?: return@launch
+            val a = MediaProbe.probe(app, Uri.fromFile(f)) ?: run { toast = Toast("Recording failed"); return@launch }
+            val p = project ?: return@launch
+            val res = TimelineOps.placeSound(p, a.copy(name = "Voice ${java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date())}"), start, "Voice") ?: return@launch
+            val np = TimelineOps.updateClip(res.first, res.second.id) { c ->
+                c.copy(audio = c.audio.with("voice", com.amiri.cut.core.model.Param(1f)).with("denoise", com.amiri.cut.core.model.Param(0.35f)).with("enhance", com.amiri.cut.core.model.Param(0.4f)))
+            } ?: res.first
+            commit("Record voice", np)
+            requestCaches(a)
+            selectedClipId = res.second.id
+            toast = Toast("Voice added · noise reduction on — music with Auto-duck gets quieter under it")
+        }
+    }
+
+    // ═════════════════════════ Auto cut-out ═════════════════════════
+
+    /** Finds the person in every frame of the selected video and makes a roto mask for it. */
+    fun autoCutout(edgeSoftness: Float = 0.3f) {
+        val c = selectedClip() ?: run { toast = Toast("Select a video clip"); return }
+        val p = project ?: return
+        val a = p.asset(c.assetId) ?: return
+        if (a.type != MediaType.VIDEO && a.type != MediaType.IMAGE) { toast = Toast("Auto cut-out needs a video or photo"); return }
+        if (!com.amiri.cut.media.AutoCutout.available(app)) { toast = Toast("The cut-out model isn't included in this build"); return }
+        val step = 1_000_000L / p.settings.fps
+        val times = if (a.type == MediaType.IMAGE) listOf(0L) else {
+            val l = ArrayList<Long>(); var t = c.sourceInUs
+            val end = (c.sourceOutUs - 1).coerceAtMost(a.durationUs - 1)
+            while (t <= end) { l += t; t += step }
+            l
+        }
+        if (a.type == MediaType.IMAGE) { toast = Toast("Auto cut-out works on videos — for photos use the roto brush"); return }
+        runBusy("Auto cut-out") { cancel, prog ->
+            val keys = ArrayList<com.amiri.cut.core.model.RotoKey>()
+            val n = withContext(Dispatchers.Default) {
+                com.amiri.cut.media.AutoCutout.run(app, a, times, edgeSoftness, { cancel.get() }, prog) { t, mask ->
+                    keys += com.amiri.cut.core.model.RotoKey(t, app.roto.saveBlocking(projectId, mask))
+                }
+            }
+            if (n == 0) { toast = Toast("Couldn't analyse this clip"); return@runBusy }
+            val cur = project ?: return@runBusy
+            commit("Auto cut-out", TimelineOps.updateClip(cur, c.id) { it.copy(roto = com.amiri.cut.core.model.Roto(enabled = true, keys = keys)) } ?: return@runBusy)
+            toast = Toast("Person cut out on $n frames — refine with the roto brush if needed")
+        }
+    }
+
+    // ═════════════════════════ Effect presets ═════════════════════════
+
+    private val presetPrefs get() = app.getSharedPreferences("fx_presets", android.content.Context.MODE_PRIVATE)
+    var presetVersion by mutableStateOf(0)
+
+    fun effectPresets(): List<String> = presetPrefs.all.keys.sorted()
+
+    fun saveEffectPreset(name: String) {
+        val c = selectedClip() ?: return
+        if (c.effects.isEmpty()) { toast = Toast("This layer has no effects to save"); return }
+        val json = app.projects.json.encodeToString(kotlinx.serialization.builtins.ListSerializer(com.amiri.cut.core.model.Effect.serializer()), c.effects)
+        presetPrefs.edit().putString(name, json).apply()
+        presetVersion++
+        toast = Toast("Saved preset “$name”")
+    }
+
+    fun applyEffectPreset(name: String) {
+        val json = presetPrefs.getString(name, null) ?: return
+        val fx = runCatching { app.projects.json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.amiri.cut.core.model.Effect.serializer()), json) }.getOrNull() ?: return
+        updateSelected("Preset $name") { c -> c.copy(effects = c.effects + fx.map { it.copy(id = com.amiri.cut.core.model.newId()) }) }
+    }
+
+    fun deleteEffectPreset(name: String) { presetPrefs.edit().remove(name).apply(); presetVersion++ }
+
     // ═════════════════════════ Copy / paste ═════════════════════════
 
     /** Copied layer attributes (a clip snapshot). */

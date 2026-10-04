@@ -9,3 +9,11 @@
 -keepclasseswithmembers class com.amiri.cut.core.model.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# MediaPipe (auto cut-out) uses JNI and protobuf reflection.
+-keep class com.google.mediapipe.** { *; }
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.mediapipe.**
+-dontwarn com.google.protobuf.**
+-dontwarn com.google.auto.value.**
+-dontwarn javax.annotation.**

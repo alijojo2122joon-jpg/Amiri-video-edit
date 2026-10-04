@@ -12,14 +12,14 @@ import java.nio.ByteOrder
 /** Applies the clip's EQ / pan (same DSP as export) inside an ExoPlayer audio sink. */
 @OptIn(UnstableApi::class)
 class ClipAudioProcessor : BaseAudioProcessor() {
-    @Volatile private var params = floatArrayOf(0f, 0f, 0f, 0f)
+    @Volatile private var params = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f)
     private var chain: AudioFxChain? = null
     private var channels = 2
     private val lr = FloatArray(2)
 
-    fun set(bass: Float, mid: Float, treble: Float, pan: Float) {
+    fun set(bass: Float, mid: Float, treble: Float, pan: Float, denoise: Float = 0f, enhance: Float = 0f) {
         val p = params
-        if (p[0] != bass || p[1] != mid || p[2] != treble || p[3] != pan) params = floatArrayOf(bass, mid, treble, pan)
+        if (p[0] != bass || p[1] != mid || p[2] != treble || p[3] != pan || p[4] != denoise || p[5] != enhance) params = floatArrayOf(bass, mid, treble, pan, denoise, enhance)
     }
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
@@ -37,7 +37,7 @@ class ClipAudioProcessor : BaseAudioProcessor() {
         val out = replaceOutputBuffer(size)
         val ch = chain
         val p = params
-        ch?.update(p[0], p[1], p[2], p[3])
+        ch?.update(p[0], p[1], p[2], p[3], p[4], p[5])
         if (ch == null || !ch.active) {
             out.put(inputBuffer)
         } else {

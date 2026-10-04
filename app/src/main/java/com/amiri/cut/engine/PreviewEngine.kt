@@ -351,11 +351,13 @@ class PreviewEngine(private val context: Context) {
             if (needSeek) s.player.seekTo(targetMs)
         }
         s.clipId = clip.id
-        s.player.volume = if (clip.contains(pos)) gainAt(track, clip, pos).coerceIn(0f, 1f) else 0f
+        val duck = project?.let { com.amiri.cut.core.audio.Ducking.factor(it, clip, pos) } ?: 1f
+        s.player.volume = if (clip.contains(pos)) (gainAt(track, clip, pos) * duck).coerceIn(0f, 1f) else 0f
         val local = pos - clip.startUs
         s.fx.set(
             clip.audio.at("bass", local, 0f), clip.audio.at("mid", local, 0f),
             clip.audio.at("treble", local, 0f), clip.audio.at("pan", local, 0f),
+            clip.audio.at("denoise", local, 0f), clip.audio.at("enhance", local, 0f),
         )
         val sp = clip.speedAt(pos).coerceIn(0.1f, 8f)
         if (abs(sp - s.speed) > 0.01f) {

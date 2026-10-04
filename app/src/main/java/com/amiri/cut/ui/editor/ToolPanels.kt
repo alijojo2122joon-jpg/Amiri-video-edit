@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.BookmarkRemove
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.material.icons.outlined.Link
@@ -282,6 +283,9 @@ private fun RotoPanel(c: EditorController) {
         }
         val roto = t.clip.roto
         val keyHere = c.rotoKeyHere(t)
+        Row(Modifier.padding(bottom = 4.dp)) {
+            PanelAction(androidx.compose.material.icons.Icons.Outlined.AutoAwesome, "✨ Auto cut-out (person)") { c.select(t.clip.id); c.autoCutout() }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(t.clip.name, color = Amiri.TextPrimary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

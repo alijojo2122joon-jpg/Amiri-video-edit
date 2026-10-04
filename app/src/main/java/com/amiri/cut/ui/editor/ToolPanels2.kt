@@ -1010,6 +1010,13 @@ internal fun EffectsPanel(c: EditorController) {
             PanelAction(Icons.Outlined.Layers, "Adjustment layer") { c.addAdjustmentLayer() }
         }
         if (clip == null) { Hint("Select a clip to add effects, or add an adjustment layer to affect every layer below it."); return@Column }
+        val presets = remember(c.presetVersion) { c.effectPresets() }
+        var naming by remember { mutableStateOf(false) }
+        if (naming) com.amiri.cut.ui.common.TextInputDialog("Save effects as preset", "My look", onDismiss = { naming = false }) { n -> c.saveEffectPreset(n.trim().ifEmpty { "Preset" }); naming = false }
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            if (clip.effects.isNotEmpty()) PanelAction(Icons.Outlined.Upload, "Save as preset") { naming = true }
+            presets.forEach { n -> ToggleChip("★ $n", false) { c.applyEffectPreset(n) } }
+        }
         SectionTitle("Add effect")
         ChoiceChips(EffectCategory.entries.toList(), cat, { it.label }) { cat = it }
         Row(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1081,11 +1088,27 @@ internal fun AudioPanel(c: EditorController) {
         if (uri != null) c.importSound(uri, preferName)
     }
     val types = arrayOf("audio/*", "video/*")
+    val micPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) c.startVoiceRecording() else c.toast = Toast("Microphone permission is needed to record a voice-over")
+    }
     Column {
+        if (c.recordingStartUs != null) {
+            val pos by c.engine.position.collectAsState()
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Amiri.Danger.copy(alpha = 0.15f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(10.dp).clip(CircleShape).background(Amiri.Danger))
+                Text("  Recording ${FrameTime.timecode((pos - (c.recordingStartUs ?: 0L)).coerceAtLeast(0), c.project?.settings?.fps ?: 30)}", color = Amiri.TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Box(Modifier.width(80.dp).height(8.dp).clip(RoundedCornerShape(4.dp)).background(Amiri.SurfaceHigh)) {
+                    Box(Modifier.fillMaxWidth(c.recordLevel.coerceIn(0f, 1f)).height(8.dp).background(LocalAccent.current))
+                }
+                Text("  Stop", color = Amiri.Danger, fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = Modifier.clickable { c.stopVoiceRecording() }.padding(6.dp))
+            }
+            return@Column
+        }
         Row(Modifier.horizontalScroll(rememberScrollState())) {
             PanelAction(Icons.Outlined.GraphicEq, "+ Sound effect") { preferName = "SFX"; soundPicker.launch(types) }
             PanelAction(Icons.Outlined.LibraryMusic, "+ Music") { preferName = "Music"; soundPicker.launch(types) }
-            PanelAction(Icons.Outlined.Mic, "+ Voice") { preferName = "Voice"; soundPicker.launch(types) }
+            PanelAction(Icons.Outlined.Mic, "● Record voice") { micPerm.launch(android.Manifest.permission.RECORD_AUDIO) }
+            PanelAction(Icons.Outlined.Upload, "+ Voice file") { preferName = "Voice"; soundPicker.launch(types) }
             val sel = c.selectedClip()
             val selTrack = sel?.let { c.project?.trackOfClip(it.id) }
             if (sel != null && selTrack?.acceptsVisual == true && c.project?.asset(sel.assetId)?.hasAudio == true && !sel.muted) {
@@ -1112,6 +1135,9 @@ internal fun AudioPanel(c: EditorController) {
         val t = EditorController.PTarget.Audio(clip.id)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ToggleChip(if (clip.muted) "Muted" else "Mute", clip.muted) { c.updateSelected("Mute") { it.copy(muted = !it.muted) } }
+            val voice = clip.audio.at("voice", 0, 0f) > 0.5f
+            ToggleChip("Voice (ducks music)", voice) { c.updateSelected("Voice flag") { it.copy(audio = it.audio.with("voice", com.amiri.cut.core.model.Param(if (voice) 0f else 1f))) } }
+            ToggleChip("Play video while recording", c.recordPlayAlong) { c.recordPlayAlong = !c.recordPlayAlong }
         }
         KeyframeBar(c, clip)
         AudioSpec.PARAMS.forEach { ParamRow(c, t, it) }

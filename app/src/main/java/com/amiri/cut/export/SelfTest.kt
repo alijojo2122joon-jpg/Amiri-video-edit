@@ -63,6 +63,13 @@ object SelfTest {
                 out.createNewFile()
                 ExportQueue.enqueue(app, "selftest", p, ExportSettings(720, 1280, 30), Uri.fromFile(out), json)
                 Log.i(TAG, "enqueued")
+                // Auto cut-out smoke check (no person in the test clip; must not crash).
+                val cut = runCatching {
+                    kotlinx.coroutines.withContext(Dispatchers.Default) {
+                        com.amiri.cut.media.AutoCutout.run(app, a, listOf(0L, 33_333L, 66_666L), 0.3f, { false }, {}) { _, _ -> }
+                    }
+                }
+                Log.i(TAG, "CUTOUT available=${com.amiri.cut.media.AutoCutout.available(app)} result=${cut.getOrNull()} error=${cut.exceptionOrNull()}")
                 var waited = 0
                 while (waited < 600) {
                     val j = ExportQueue.jobs.value.lastOrNull { it.name == "selftest" }

@@ -13,9 +13,11 @@ android {
         applicationId = "com.amiri.cut"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.7.0"
+        versionCode = 11
+        versionName = "0.8.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Phones (arm64) and the emulator used for automatic tests (x86_64).
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     signingConfigs {
@@ -82,6 +84,9 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+
+    // On-device person segmentation for Auto cut-out (offline; model bundled in assets).
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
 
     testImplementation("junit:junit:4.13.2")
 }

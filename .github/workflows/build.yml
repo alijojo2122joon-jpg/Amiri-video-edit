@@ -35,6 +35,13 @@ jobs:
             echo "No keystore secret: release APK will be signed with the debug key (fine for personal installs)."
           fi
 
+      - name: Fetch on-device models (bundled into the APK; the app itself stays offline)
+        run: |
+          mkdir -p app/src/main/assets/models
+          curl -fsSL -o app/src/main/assets/models/selfie_segmenter.tflite \
+            https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite \
+            && ls -la app/src/main/assets/models || echo "::warning::segmentation model download failed — auto cut-out disabled in this build"
+
       - name: Unit tests
         run: |
           set -o pipefail
@@ -119,7 +126,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          [ -f selftest-out.mp4 ] || exit 0
+          ls -la selftest-out.mp4 || { echo "::warning::no selftest-out.mp4 in $(pwd): $(ls | tr '\n' ' ')"; exit 0; }
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           TAG="v${VERSION}-build${{ github.run_number }}"
           pip install --quiet imageio-ffmpeg

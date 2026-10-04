@@ -171,7 +171,7 @@ class AudioMixer(private val context: Context, private val project: Project, pri
     private fun fxFor(c: Clip, t: Long): com.amiri.cut.core.audio.AudioFxChain {
         val ch = fx.getOrPut(c.id) { com.amiri.cut.core.audio.AudioFxChain(rate.toDouble()) }
         val l = t - c.startUs
-        ch.update(c.audio.at("bass", l, 0f), c.audio.at("mid", l, 0f), c.audio.at("treble", l, 0f), c.audio.at("pan", l, 0f))
+        ch.update(c.audio.at("bass", l, 0f), c.audio.at("mid", l, 0f), c.audio.at("treble", l, 0f), c.audio.at("pan", l, 0f), c.audio.at("denoise", l, 0f), c.audio.at("enhance", l, 0f))
         return ch
     }
     private val whole = HashMap<String, Pair<FloatArray, Int>?>()
@@ -217,7 +217,7 @@ class AudioMixer(private val context: Context, private val project: Project, pri
                     val src = asset.durationUs - c.sourceTimeAt(t)
                     val k = (src * sr / 1_000_000L).toInt()
                     if (k in 0 until n) {
-                        val g = PreviewEngine.gainAt(s.track, c, t)
+                        val g = PreviewEngine.gainAt(s.track, c, t) * com.amiri.cut.core.audio.Ducking.factor(project, c, t)
                         tmp[0] = data[k * 2] * g; tmp[1] = data[k * 2 + 1] * g
                         if (i % 256 == 0 || i == 0) fxFor(c, t)
                         fx[c.id]?.takeIf { it.active }?.process(tmp)
@@ -233,7 +233,7 @@ class AudioMixer(private val context: Context, private val project: Project, pri
             for (i in 0 until frames) {
                 val t = (startFrame + i) * 1_000_000L / rate
                 if (t < c.startUs || t >= c.endUs) continue
-                if (i % 256 == 0 || gain == 0f || chain == null) { gain = PreviewEngine.gainAt(s.track, c, t); chain = fxFor(c, t) }
+                if (i % 256 == 0 || gain == 0f || chain == null) { gain = PreviewEngine.gainAt(s.track, c, t) * com.amiri.cut.core.audio.Ducking.factor(project, c, t); chain = fxFor(c, t) }
                 r.sample(c.sourceTimeAt(t), tmp)
                 if (gain <= 0f) continue
                 tmp[0] *= gain; tmp[1] *= gain

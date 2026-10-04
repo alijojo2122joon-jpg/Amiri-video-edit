@@ -3,6 +3,7 @@ package com.amiri.cut.core.audio
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -18,10 +19,16 @@ class Biquad {
         b0 = nb0 / na0; b1 = nb1 / na0; b2 = nb2 / na0; a1 = na1 / na0; a2 = na2 / na0
     }
 
-    /** kind 0 = low shelf, 1 = peaking, 2 = high shelf. */
+    /** kind 0 = low shelf, 1 = peaking, 2 = high shelf, 3 = high-pass (gainDb ≠ 0 enables it). */
     fun design(kind: Int, fs: Double, f0: Double, gainDb: Double, q: Double = 0.707) {
         bypass = abs(gainDb) < 0.05
         if (bypass) return
+        if (kind == 3) {
+            val w0 = 2 * PI * (f0 / fs).coerceIn(1e-4, 0.49)
+            val cw = cos(w0); val alpha = sin(w0) / (2 * q)
+            set((1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
+            return
+        }
         val a = 10.0.pow(gainDb / 40.0)
         val w0 = 2 * PI * (f0 / fs).coerceIn(1e-4, 0.49)
         val cw = cos(w0); val sw = sin(w0)
@@ -60,23 +67,64 @@ class Biquad {
  */
 class AudioFxChain(private val fs: Double) {
     private val bass = Biquad(); private val mid = Biquad(); private val treble = Biquad()
+    private val hp = Biquad(); private val hiss = Biquad(); private val presence = Biquad()
     private var cb = Float.NaN; private var cm = Float.NaN; private var ct = Float.NaN
+    private var cd = Float.NaN; private var ce = Float.NaN
     var pan = 0f
+    private var denoise = 0f
+    private var enhance = 0f
+    // Envelope followers for the noise gate and the voice compressor.
+    private var env = 0.0
+    private var gateGain = 1.0
+    private val att = exp(-1.0 / (0.004 * fs))
+    private val rel = exp(-1.0 / (0.12 * fs))
+    private val gAtt = exp(-1.0 / (0.01 * fs))
+    private val gRel = exp(-1.0 / (0.08 * fs))
 
-    fun update(bassDb: Float, midDb: Float, trebleDb: Float, pan: Float) {
+    fun update(bassDb: Float, midDb: Float, trebleDb: Float, pan: Float, denoise: Float = 0f, enhance: Float = 0f) {
         if (bassDb != cb) { bass.design(0, fs, 150.0, bassDb.toDouble()); cb = bassDb }
         if (midDb != cm) { mid.design(1, fs, 1200.0, midDb.toDouble(), 0.9); cm = midDb }
         if (trebleDb != ct) { treble.design(2, fs, 5000.0, trebleDb.toDouble()); ct = trebleDb }
+        if (denoise != cd) {
+            hp.design(3, fs, 70.0 + denoise * 50.0, if (denoise > 0.001f) 1.0 else 0.0)
+            hiss.design(2, fs, 7000.0, -denoise * 10.0)
+            cd = denoise
+        }
+        if (enhance != ce) { presence.design(1, fs, 3000.0, enhance * 5.0, 1.0); ce = enhance }
         this.pan = pan.coerceIn(-1f, 1f)
+        this.denoise = denoise.coerceIn(0f, 1f)
+        this.enhance = enhance.coerceIn(0f, 1f)
     }
 
-    val active: Boolean get() = !bass.bypass || !mid.bypass || !treble.bypass || abs(pan) > 0.001f
+    val active: Boolean get() = !bass.bypass || !mid.bypass || !treble.bypass || abs(pan) > 0.001f || denoise > 0.001f || enhance > 0.001f
 
     /** Processes one stereo frame in place. */
     fun process(lr: FloatArray) {
         var l = lr[0]; var r = lr[1]
+        if (denoise > 0.001f) {
+            l = hiss.process(hp.process(l, 0), 0); r = hiss.process(hp.process(r, 1), 1)
+        }
         l = treble.process(mid.process(bass.process(l, 0), 0), 0)
         r = treble.process(mid.process(bass.process(r, 1), 1), 1)
+        if (enhance > 0.001f) { l = presence.process(l, 0); r = presence.process(r, 1) }
+        if (denoise > 0.001f || enhance > 0.001f) {
+            val lvl = maxOf(abs(l), abs(r)).toDouble()
+            env = if (lvl > env) att * env + (1 - att) * lvl else rel * env + (1 - rel) * lvl
+            var target = 1.0
+            // Noise gate: quiet parts (room noise between words) are pushed down.
+            if (denoise > 0.001f) {
+                val th = 0.004 + denoise * 0.026
+                if (env < th) target *= (env / th).pow(1.0 + denoise * 2.0)
+            }
+            // Voice compressor: louder parts are evened out, then made up.
+            if (enhance > 0.001f) {
+                val ct2 = 0.2
+                if (env > ct2) target *= (env / ct2).pow(-0.45 * enhance)
+                target *= 1.0 + 0.35 * enhance
+            }
+            gateGain = if (target < gateGain) gAtt * gateGain + (1 - gAtt) * target else gRel * gateGain + (1 - gRel) * target
+            l = (l * gateGain).toFloat(); r = (r * gateGain).toFloat()
+        }
         if (pan > 0f) l *= 1f - pan else if (pan < 0f) r *= 1f + pan
         lr[0] = l; lr[1] = r
     }
