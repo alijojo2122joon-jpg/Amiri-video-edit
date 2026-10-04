@@ -539,6 +539,27 @@ object TimelineOps {
         }
     }
 
+    /**
+     * Uses [cleaned] (a processed copy of [clipId]'s sound covering its source in..out) for
+     * the clip's audio. Audio clips switch to the new file; a video clip is muted and the
+     * clean sound is placed on an audio track at the same time (same speed and settings).
+     */
+    fun useCleanSound(p: Project, clipId: String, cleaned: MediaAsset): Pair<Project, Clip>? {
+        val track = p.trackOfClip(clipId) ?: return null
+        val clip = track.clips.first { it.id == clipId }
+        var proj = addAsset(p, cleaned)
+        if (track.kind == TrackKind.AUDIO) {
+            val nc = clip.copy(assetId = cleaned.id, sourceInUs = 0, sourceOutUs = clip.sourceOutUs - clip.sourceInUs, name = clip.name.removeSuffix(" (clean)") + " (clean)")
+            proj = proj.mapTrack(track.id) { t -> t.copy(clips = t.clips.map { if (it.id == clipId) nc else it }) }
+            return proj to nc
+        }
+        val (dp, sound) = detachAudio(proj, clipId) ?: return null
+        val nc = sound.copy(assetId = cleaned.id, sourceInUs = 0, sourceOutUs = sound.sourceOutUs - sound.sourceInUs, name = clip.name + " (clean voice)")
+        val tr = dp.trackOfClip(sound.id) ?: return null
+        val out = dp.mapTrack(tr.id) { t -> t.copy(clips = t.clips.map { if (it.id == sound.id) nc else it }) }
+        return out to nc
+    }
+
     /** Adds an adjustment layer (affects all layers below it) at [atUs]. */
     fun addAdjustment(p: Project, atUs: Long, durationUs: Long = 5_000_000L): Pair<Project, Clip> {
         val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)

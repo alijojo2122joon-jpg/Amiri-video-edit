@@ -72,6 +72,17 @@ object SelfTest {
                         com.amiri.cut.media.AutoCutout.run(app, a, listOf(0L, 33_333L, 66_666L), 0.3f, { false }, {}) { _, _ -> }
                     }
                 }
+                // Voice isolation smoke check on the test clip's tone (noise → should drop).
+                val dn = runCatching {
+                    kotlinx.coroutines.withContext(Dispatchers.Default) {
+                        val pcm = com.amiri.cut.media.AudioDecode.mono(app, a.uri, 0, 2_000_000L)!!
+                        val t0 = System.currentTimeMillis()
+                        val o = com.amiri.cut.media.VoiceIsolation.clean(app, pcm.data, pcm.rate, 1f, 1, { false }, {})
+                        fun rms(x: FloatArray) = kotlin.math.sqrt(x.fold(0.0) { s, v -> s + v * v } / x.size.coerceAtLeast(1))
+                        "in=%.4f out=%.4f n=%d rate=%d ms=%d".format(rms(pcm.data), rms(o), pcm.data.size, pcm.rate, System.currentTimeMillis() - t0)
+                    }
+                }
+                Log.i(TAG, "DENOISE ${dn.getOrNull()} error=${dn.exceptionOrNull()}")
                 Log.i(TAG, "CUTOUT available=${com.amiri.cut.media.AutoCutout.available(app)} result=${cut.getOrNull()} error=${cut.exceptionOrNull()}")
                 var waited = 0
                 while (waited < 600) {

@@ -1236,6 +1236,19 @@ internal fun AudioPanel(c: EditorController) {
             return@Column
         }
         val t = EditorController.PTarget.Audio(clip.id)
+        SectionTitle("✨ AI voice isolation")
+        var vStrength by remember { mutableFloatStateOf(1f) }
+        var vStrong by remember { mutableStateOf(false) }
+        Text(
+            "An on-device neural network listens to the sound and keeps only the human voice — wind, traffic, crowd, fans, hum and room echo are removed. Works offline.",
+            color = Amiri.TextSecondary, fontSize = 11.sp,
+        )
+        LabeledSlider("Strength", vStrength, 0f..1f, "${(vStrength * 100).toInt()}%") { vStrength = it }
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            ToggleChip(if (vStrong) "Strong (2 passes) ✓" else "Strong (2 passes)", vStrong) { vStrong = !vStrong }
+            PanelAction(Icons.Outlined.AutoAwesome, "Isolate voice") { c.isolateVoice(vStrength, vStrong) }
+        }
+        SectionTitle("Sound")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ToggleChip(if (clip.muted) "Muted" else "Mute", clip.muted) { c.updateSelected("Mute") { it.copy(muted = !it.muted) } }
             val voice = clip.audio.at("voice", 0, 0f) > 0.5f

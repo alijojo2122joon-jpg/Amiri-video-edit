@@ -1197,6 +1197,37 @@ class EditorController(
         }
     }
 
+    // ═════════════════════════ AI voice isolation ═════════════════════════
+
+    /** Separates the human voice from wind / traffic / crowd / hum with the on-device network. */
+    fun isolateVoice(strength: Float, strong: Boolean) {
+        val c = selectedClip() ?: run { toast = Toast("Select a clip with sound"); return }
+        val p = project ?: return
+        val a = p.asset(c.assetId)?.takeIf { it.hasAudio } ?: run { toast = Toast("This clip has no sound"); return }
+        runBusy(if (strong) "Isolating voice (strong)" else "Isolating voice") { cancel, prog ->
+            val file = withContext(Dispatchers.Default) {
+                val pcm = com.amiri.cut.media.AudioDecode.mono(app, a.uri, c.sourceInUs, c.sourceOutUs, { cancel.get() }) { f -> prog(f * 0.15f) }
+                    ?: return@withContext null
+                if (pcm.data.isEmpty()) return@withContext null
+                // Pad the start if the decoder began a little late, so timing stays exact.
+                val lead = ((pcm.startUs - c.sourceInUs) * pcm.rate / 1_000_000L).toInt().coerceIn(0, pcm.rate)
+                val src = if (lead > 0) FloatArray(lead) + pcm.data else pcm.data
+                val out = com.amiri.cut.media.VoiceIsolation.clean(app, src, pcm.rate, strength, if (strong) 2 else 1, { cancel.get() }) { f -> prog(0.15f + f * 0.8f) }
+                if (cancel.get()) return@withContext null
+                val f = java.io.File(java.io.File(app.filesDir, "voice/${p.id}"), "clean-${System.currentTimeMillis()}.wav")
+                com.amiri.cut.media.AudioDecode.writeWav(f, out, pcm.rate)
+                f
+            } ?: run { toast = Toast("Couldn't process this sound"); return@runBusy }
+            val asset = MediaProbe.probe(app, Uri.fromFile(file)) ?: run { toast = Toast("Couldn't read the cleaned sound"); return@runBusy }
+            val cur = project ?: return@runBusy
+            val r = TimelineOps.useCleanSound(cur, c.id, asset.copy(name = c.name + " (clean voice)")) ?: run { toast = Toast("Couldn't place the cleaned sound"); return@runBusy }
+            commit("AI voice isolation", r.first)
+            requestCaches(asset)
+            selectedClipId = r.second.id
+            toast = Toast("Voice isolated — wind and noise removed. Undo to compare with the original.")
+        }
+    }
+
     // ═════════════════════════ Effect presets ═════════════════════════
 
     private val presetPrefs get() = app.getSharedPreferences("fx_presets", android.content.Context.MODE_PRIVATE)

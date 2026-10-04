@@ -13,8 +13,8 @@ android {
         applicationId = "com.amiri.cut"
         minSdk = 29
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.9.3"
+        versionCode = 18
+        versionName = "0.9.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Phones (arm64) and the emulator used for automatic tests (x86_64).
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
@@ -87,6 +87,8 @@ dependencies {
 
     // On-device person segmentation for Auto cut-out (offline; model bundled in assets).
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    // On-device speech enhancement (DTLN voice isolation; models bundled in assets).
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
     testImplementation("junit:junit:4.13.2")
 }

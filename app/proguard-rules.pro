@@ -25,3 +25,7 @@
 -dontwarn com.squareup.javapoet.**
 -dontwarn org.checkerframework.**
 -dontwarn com.google.errorprone.**
+
+# TensorFlow Lite (voice isolation)
+-keep class org.tensorflow.lite.** { *; }
+-dontwarn org.tensorflow.lite.**
