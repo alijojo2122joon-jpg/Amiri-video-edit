@@ -1,0 +1,33 @@
+name: Export compile classpath
+
+# Manual helper: publishes the Kotlin compile classpath as a pre-release asset so the
+# sources can be type-checked on a machine without the Android SDK.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Export classpath
+        run: |
+          ./gradlew --no-daemon exportCompileClasspath
+          cd app/build/compile-classpath && zip -q -r ../../../classpath.zip . && cd -
+          ls -la classpath.zip
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dev-classpath --yes --cleanup-tag || true
+          gh release create dev-classpath classpath.zip --prerelease --latest=false \
+            --title "Developer classpath (not an app release)" --notes "Compile classpath for offline type-checking. Not an app build."

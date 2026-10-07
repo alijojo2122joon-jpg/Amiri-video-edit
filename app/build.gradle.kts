@@ -101,3 +101,19 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
+
+// Developer aid: copies the exact Kotlin compile classpath (dependency class jars, R.jar and
+// android.jar) into build/compile-classpath so the sources can be type-checked outside Gradle.
+tasks.register("exportCompileClasspath") {
+    dependsOn("compileDebugKotlin")
+    doLast {
+        val out = layout.buildDirectory.dir("compile-classpath").get().asFile
+        out.deleteRecursively(); out.mkdirs()
+        val kc = tasks.named("compileDebugKotlin").get() as org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+        val files = kc.libraries.files + android.bootClasspath
+        files.filter { it.exists() && it.isFile && it.name.endsWith(".jar") }.forEachIndexed { i, f ->
+            f.copyTo(File(out, "%03d-%s-%s".format(i, f.parentFile.name.take(40), f.name)), overwrite = true)
+        }
+        println("Exported ${out.listFiles()?.size} jars to $out")
+    }
+}
