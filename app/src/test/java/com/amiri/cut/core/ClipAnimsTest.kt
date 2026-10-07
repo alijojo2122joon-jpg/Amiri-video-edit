@@ -86,6 +86,25 @@ class ClipAnimsTest {
         assertEquals("rock", right.anim!!.comboId)
     }
 
+    @Test fun stickersGoAboveEveryOtherLayer() {
+        val p = Project(
+            id = "p", name = "t", createdAt = 0, modifiedAt = 0,
+            settings = ProjectSettings(1080, 1920, 30, "9:16", "1080p", CanvasBackground.BLACK),
+            tracks = Project.defaultTracks(),
+        )
+        val img = MediaAsset("s", "file:///s.png", MediaType.IMAGE, "s.png", 0L, 640, 640)
+        val (p1, c1) = TimelineOps.placeOverlay(p, img, 0L, 3_000_000L, 0.38f, onTop = true)!!
+        assertEquals(c1.id, p1.tracks.first().clips.single().id)
+        // Overlapping the first one: a new track above it.
+        val (p2, c2) = TimelineOps.placeOverlay(p1, img, 1_000_000L, 3_000_000L, 0.38f, onTop = true)!!
+        assertEquals(c2.id, p2.tracks.first().clips.single().id)
+        assertEquals(p1.tracks.size + 1, p2.tracks.size)
+        // Free time on the top track: reused, no new track.
+        val (p3, c3) = TimelineOps.placeOverlay(p2, img, 10_000_000L, 1_000_000L, 0.38f, onTop = true)!!
+        assertEquals(p2.tracks.size, p3.tracks.size)
+        assertTrue(p3.tracks.first().clips.any { it.id == c3.id })
+    }
+
     @Test fun exportBitrateTiersAreOrderedAndSane() {
         val q = ExportQuality.entries.map { EncoderCaps.bitrate(1080, 1920, 30, it, VideoCodec.H264) }
         assertEquals(q.sorted(), q)

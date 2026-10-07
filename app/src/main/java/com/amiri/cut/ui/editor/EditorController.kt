@@ -1839,7 +1839,7 @@ class EditorController(
                 }.getOrNull()
             } ?: run { toast = Toast("Couldn't create the sticker"); return@launch }
             val cur = project ?: p0
-            val r = TimelineOps.placeOverlay(cur, asset, at, 3_000_000L, 0.38f) ?: TimelineOps.placeAsset(cur, asset, at)
+            val r = TimelineOps.placeOverlay(cur, asset, at, 3_000_000L, 0.38f, onTop = true) ?: TimelineOps.placeAsset(cur, asset, at)
             val named = TimelineOps.updateClip(r.first, r.second.id) { it.copy(name = asset.name) } ?: r.first
             commit("Add sticker", named)
             selectedClipId = r.second.id

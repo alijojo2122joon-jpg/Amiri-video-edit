@@ -397,16 +397,23 @@ object TimelineOps {
 
     /**
      * Puts a photo/video on a free overlay track at [atUs] (creating one if needed), at most
-     * [maxDurationUs] long, scaled down so it reads as an overlay.
+     * [maxDurationUs] long, scaled down so it reads as an overlay. With [onTop] (stickers) it
+     * goes above every other picture and text layer, like a freshly added sticker should.
      */
-    fun placeOverlay(p: Project, asset: MediaAsset, atUs: Long, maxDurationUs: Long, scale: Float = 0.4f): Pair<Project, Clip>? {
+    fun placeOverlay(p: Project, asset: MediaAsset, atUs: Long, maxDurationUs: Long, scale: Float = 0.4f, onTop: Boolean = false): Pair<Project, Clip>? {
         if (asset.type == MediaType.AUDIO) return null
         val start = FrameTime.quantize(atUs.coerceAtLeast(0), p.settings.fps)
         val base = newClipFor(asset, start)
         val out = if (asset.isStill) maxDurationUs.coerceAtLeast(frame(p.settings.fps)) else minOf(base.sourceOutUs, base.sourceInUs + maxDurationUs.coerceAtLeast(frame(p.settings.fps)))
         val clip = base.copy(sourceOutUs = out, transform = com.amiri.cut.core.model.Props.of("scale" to scale))
         var proj = addAsset(p, asset)
-        val t = freeVisualTrack(proj, listOf(TrackKind.OVERLAY), clip.startUs, clip.endUs)
+        val t = if (onTop) {
+            val top = proj.tracks.firstOrNull { it.kind != TrackKind.AUDIO }
+            if (top != null && top.kind == TrackKind.OVERLAY && !top.locked && isFree(top, clip.startUs, clip.endUs)) top
+            else Track(newId(), TrackKind.OVERLAY, "Overlay ${proj.tracks.count { it.kind == TrackKind.OVERLAY } + 1}").also { nt ->
+                proj = proj.copy(tracks = listOf(nt) + proj.tracks)
+            }
+        } else freeVisualTrack(proj, listOf(TrackKind.OVERLAY), clip.startUs, clip.endUs)
             ?: run { proj = addTrack(proj, TrackKind.OVERLAY); proj.tracks.last { it.kind == TrackKind.OVERLAY } }
         proj = proj.mapTrack(t.id) { it.withClips(it.clips + clip) }
         return proj to clip
