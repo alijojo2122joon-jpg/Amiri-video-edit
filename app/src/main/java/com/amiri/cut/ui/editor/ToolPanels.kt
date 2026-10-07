@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +79,7 @@ import com.amiri.cut.core.time.FrameTime
 import com.amiri.cut.ui.theme.Amiri
 import com.amiri.cut.ui.theme.Haptics
 import com.amiri.cut.ui.theme.LocalAccent
+import com.amiri.cut.ui.theme.pressScale
 import com.amiri.cut.ui.theme.glass
 import com.amiri.cut.ui.theme.glassAccent
 
@@ -85,7 +87,7 @@ import com.amiri.cut.ui.theme.glassAccent
 @Composable
 fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifier) {
     Box(
-        modifier.fillMaxWidth().heightIn(max = 330.dp).verticalScroll(rememberScrollState()).padding(horizontal = 8.dp).padding(bottom = 10.dp),
+        modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 10.dp).padding(bottom = 14.dp),
     ) {
         Column {
             c.busy?.let { b -> BusyBar(c, b) }
@@ -108,6 +110,8 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
                 EditorTool.STABILIZE -> StabilizePanel(c)
                 EditorTool.RATIO -> RatioPanel(c)
                 EditorTool.BACKGROUND -> BackgroundPanel(c)
+                EditorTool.ANIMATION -> AnimationPanel(c)
+                EditorTool.STICKERS -> StickersPanel(c)
             }
         }
     }
@@ -116,16 +120,20 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
 @Composable
 internal fun PanelAction(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
     val view = LocalView.current
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Column(
-        Modifier.width(70.dp).clip(RoundedCornerShape(14.dp))
-            .clickable(enabled = enabled) { Haptics.select(view); onClick() }
+        Modifier.width(72.dp).pressScale(source, 0.9f).clip(RoundedCornerShape(16.dp))
+            .clickable(interactionSource = source, indication = null, enabled = enabled) { Haptics.select(view); onClick() }
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.SurfaceHigh), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.size(48.dp).clip(RoundedCornerShape(15.dp)).background(Amiri.SurfaceHigh).border(1.dp, Amiri.Line, RoundedCornerShape(15.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(icon, label, tint = if (enabled) Amiri.TextPrimary else Amiri.TextTertiary, modifier = Modifier.size(22.dp))
         }
-        Text(label, color = if (enabled) Amiri.TextSecondary else Amiri.TextTertiary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+        Text(label, color = if (enabled) Amiri.TextSecondary else Amiri.TextTertiary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
     }
 }
 
@@ -367,29 +375,26 @@ private fun RotoPanel(c: EditorController) {
 @Composable
 internal fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(50)
+    val view = LocalView.current
     Box(
         Modifier
+            .height(34.dp)
             .clip(shape)
             .background(if (on) Amiri.TextPrimary else Amiri.SurfaceHigh, shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .then(if (on) Modifier else Modifier.border(1.dp, Amiri.Line, shape))
+            .clickable { Haptics.select(view); onClick() }
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (on) androidx.compose.ui.graphics.Color(0xFF0B0B0C) else Amiri.TextSecondary, fontSize = 12.5.sp, fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Medium)
+        Text(label, color = if (on) androidx.compose.ui.graphics.Color(0xFF0B0B0C) else Amiri.TextSecondary, fontSize = 12.5.sp, fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Medium, maxLines = 1)
     }
 }
 
 @Composable
 internal fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
-    val accent = LocalAccent.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(40.dp).padding(horizontal = 4.dp)) {
-        Text(label, color = Amiri.TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(64.dp))
-        androidx.compose.material3.Slider(
-            value = value, onValueChange = onChange, valueRange = range,
-            colors = androidx.compose.material3.SliderDefaults.colors(
-                thumbColor = androidx.compose.ui.graphics.Color.White, activeTrackColor = accent, inactiveTrackColor = Amiri.SurfaceHighest,
-            ),
-            modifier = Modifier.weight(1f),
-        )
-        Text(display, color = Amiri.TextPrimary, fontSize = 12.sp, style = com.amiri.cut.ui.theme.MonoStyle, maxLines = 1, modifier = Modifier.width(52.dp).padding(start = 8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(42.dp).padding(horizontal = 4.dp)) {
+        Text(label, color = Amiri.TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(70.dp))
+        com.amiri.cut.ui.common.AmiriSlider(value, onChange, Modifier.weight(1f), range)
+        Text(display, color = Amiri.TextPrimary, fontSize = 12.sp, style = com.amiri.cut.ui.theme.MonoStyle, maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.width(56.dp).padding(start = 8.dp))
     }
 }

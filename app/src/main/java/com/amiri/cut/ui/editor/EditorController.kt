@@ -43,7 +43,7 @@ import com.amiri.cut.media.RotoPropagator
 enum class Placement { APPEND_TO_MAIN, AT_PLAYHEAD, OVERLAY, BIN_ONLY }
 
 /** One-tap flows from the Home screen: import, then jump straight into a tool. */
-enum class QuickStart { REMOVE_BG, SMART_ROTO, CLEAN_VOICE, STABILIZE, BEAT_SYNC }
+enum class QuickStart { REMOVE_BG, SMART_ROTO, CLEAN_VOICE, STABILIZE, BEAT_SYNC, ANIMATE, STICKERS }
 
 enum class EditorTool(val label: String, val stage: Int) {
     MEDIA("Media", 1),
@@ -64,6 +64,8 @@ enum class EditorTool(val label: String, val stage: Int) {
     AUDIO("Audio", 10),
     RATIO("Ratio", 1),
     BACKGROUND("Background", 1),
+    ANIMATION("Animation", 2),
+    STICKERS("Stickers", 4),
     ;
     /** Every tool is implemented. */
     val available: Boolean get() = true
@@ -344,6 +346,8 @@ class EditorController(
             QuickStart.CLEAN_VOICE -> { activeTool = EditorTool.AUDIO; isolateVoice(1f, false) }
             QuickStart.STABILIZE -> { activeTool = EditorTool.STABILIZE; stabilize(com.amiri.cut.core.model.StabMode.ADVANCED, 0.6f, 0f) }
             QuickStart.BEAT_SYNC -> { activeTool = EditorTool.AUDIO; toast = Toast("Add music, then tap Find beats") }
+            QuickStart.ANIMATE -> { activeTool = EditorTool.ANIMATION; toast = Toast("Pick an In, Out or Combo animation") }
+            QuickStart.STICKERS -> { select(null); activeTool = EditorTool.STICKERS }
         }
     }
 
@@ -615,6 +619,15 @@ class EditorController(
         val screen = plan.screen
         when {
             screen == "editor" -> select(null)
+            screen == "editor:ANIMATION" -> {
+                setAnim("Animation") { it.copy(inId = "zoomIn", inDur = 0.6f, comboId = "kenBurnsIn") }
+                activeTool = EditorTool.ANIMATION
+            }
+            screen == "editor:STICKERS" -> {
+                addArtSticker("ginger")
+                kotlinx.coroutines.delay(1200)
+                activeTool = EditorTool.STICKERS
+            }
             screen.startsWith("editor:") -> runCatching { activeTool = EditorTool.valueOf(screen.substringAfter(':')) }
             screen == "export" -> openExport = true
         }
@@ -1764,6 +1777,87 @@ class EditorController(
         val (np, clip) = TimelineOps.addText(project ?: return, engine.position.value, text)
         commit("Add text", np)
         selectedClipId = clip.id
+    }
+
+    // ═════════════════════════ Clip animations ═════════════════════════
+
+    /** Changes the selected clip's In / Out / Combo animation (removed when everything is None). */
+    fun setAnim(label: String, live: Boolean = false, f: (com.amiri.cut.core.model.ClipAnim) -> com.amiri.cut.core.model.ClipAnim) =
+        updateSelected(label, live) { c ->
+            val a = f(c.anim ?: com.amiri.cut.core.model.ClipAnim())
+            c.copy(anim = a.takeIf { com.amiri.cut.core.anim.ClipAnims.active(it) })
+        }
+
+    /** Plays the part of the clip where an animation was just picked, so it can be seen. */
+    fun previewAnim(part: String) {
+        val c = selectedClip() ?: return
+        val a = c.anim ?: return
+        val start = when (part) {
+            "out" -> c.endUs - (a.outDur * 1_000_000).toLong() - 300_000L
+            "combo" -> engine.position.value.coerceIn(c.startUs, c.endUs - 1)
+            else -> c.startUs
+        }.coerceIn(c.startUs, (c.endUs - 1).coerceAtLeast(c.startUs))
+        engine.seekTo(start)
+        engine.play()
+    }
+
+    // ═════════════════════════ Stickers ═════════════════════════
+
+    /** Adds an emoji sticker (a text layer) at the playhead with a pop-in entrance. */
+    fun addEmojiSticker(emoji: String) {
+        val p = project ?: return
+        engine.pause()
+        val (np, clip) = TimelineOps.addText(p, engine.position.value, emoji, 3_000_000L)
+        val spec = com.amiri.cut.core.model.TextSpec(
+            text = emoji,
+            props = com.amiri.cut.core.model.Props.of("size" to 0.17f),
+            animIn = "pop", inDur = 0.45f,
+        )
+        val withSpec = TimelineOps.updateClip(np, clip.id) { it.copy(text = spec, name = "Sticker $emoji") } ?: np
+        commit("Add sticker", withSpec)
+        selectedClipId = clip.id
+    }
+
+    /** Adds one of the drawn cat stickers as a transparent picture overlay. */
+    fun addArtSticker(kind: String) {
+        val p0 = project ?: return
+        engine.pause()
+        val at = engine.position.value
+        scope.launch {
+            val asset = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bmp = com.amiri.cut.ui.editor.StickerArt.render(kind, 640)
+                    val dir = java.io.File(app.filesDir, "projects/$projectId/media").apply { mkdirs() }
+                    val f = java.io.File(dir, "sticker_${kind}_${com.amiri.cut.core.model.newId()}.png")
+                    f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    MediaAsset(
+                        id = com.amiri.cut.core.model.newId(), uri = Uri.fromFile(f).toString(), type = MediaType.IMAGE,
+                        name = "Sticker " + com.amiri.cut.ui.editor.StickerArt.label(kind), durationUs = 0, width = bmp.width, height = bmp.height,
+                    )
+                }.getOrNull()
+            } ?: run { toast = Toast("Couldn't create the sticker"); return@launch }
+            val cur = project ?: p0
+            val r = TimelineOps.placeOverlay(cur, asset, at, 3_000_000L, 0.38f) ?: TimelineOps.placeAsset(cur, asset, at)
+            val withAnim = TimelineOps.updateClip(r.first, r.second.id) { it.copy(anim = com.amiri.cut.core.model.ClipAnim(inId = "pop", inDur = 0.45f), name = asset.name) } ?: r.first
+            commit("Add sticker", withAnim)
+            selectedClipId = r.second.id
+            requestCaches(asset)
+        }
+    }
+
+    // ═════════════════════════ One-tap enhance ═════════════════════════
+
+    /** Crisper, livelier picture in one tap: sharpen + clarity + vibrance + a touch of dehaze. */
+    fun enhanceSelected() {
+        val c = selectedClip() ?: run { toast = Toast("Select a clip first"); return }
+        val fxId = c.effects.firstOrNull { it.type == "color" }?.id ?: ensureColorEffect() ?: return
+        val t = PTarget.Fx(c.id, fxId)
+        beginEdit()
+        listOf("sharpen" to 0.32f, "clarity" to 0.22f, "vibrance" to 0.18f, "dehaze" to 0.08f, "contrast" to 0.05f).forEach { (id, v) ->
+            setParam(t, id, v, 0f)
+        }
+        endEdit("Enhance")
+        toast = Toast("Enhanced ✨")
     }
 
     fun updateText(label: String, live: Boolean = false, f: (com.amiri.cut.core.model.TextSpec) -> com.amiri.cut.core.model.TextSpec) =

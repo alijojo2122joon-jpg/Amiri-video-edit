@@ -107,30 +107,51 @@ class Fbo(val width: Int, val height: Int) {
 class FboPool {
     private val free = HashMap<Long, ArrayDeque<Fbo>>()
     private val all = ArrayList<Fbo>()
+    private val idleSince = HashMap<Fbo, Int>()
+    private var frame = 0
 
     private fun key(w: Int, h: Int) = (w.toLong() shl 32) or h.toLong()
 
     fun obtain(w: Int, h: Int): Fbo {
         val q = free[key(w, h)]
         val f = q?.removeLastOrNull()
-        if (f != null) return f
+        if (f != null) { idleSince.remove(f); return f }
         return Fbo(w, h).also { all += it }
     }
 
     fun recycle(f: Fbo) {
         free.getOrPut(key(f.width, f.height)) { ArrayDeque() }.addLast(f)
+        idleSince[f] = frame
+    }
+
+    /**
+     * Call once per rendered frame. Frees buffers that sat unused for [idleFrames] frames, so
+     * sizes that come and go (zoom animations, viewer pinch-zoom) don't pile up GPU memory.
+     */
+    fun endFrame(idleFrames: Int = 90) {
+        frame++
+        if (frame % 15 != 0) return
+        val it = free.values.iterator()
+        while (it.hasNext()) {
+            val q = it.next()
+            val stale = q.filter { f -> frame - (idleSince[f] ?: frame) > idleFrames }
+            if (stale.isEmpty()) continue
+            stale.forEach { f -> q.remove(f); idleSince.remove(f); all.remove(f); f.release() }
+            if (q.isEmpty()) it.remove()
+        }
     }
 
     /** Frees FBOs not of the given sizes (call when the canvas size changes). */
     fun trim(maxCount: Int = 48) {
         if (all.size <= maxCount) return
-        free.values.forEach { q -> q.forEach { it.release(); all.remove(it) }; q.clear() }
+        free.values.forEach { q -> q.forEach { it.release(); all.remove(it); idleSince.remove(it) }; q.clear() }
     }
 
     fun releaseAll() {
         all.forEach { it.release() }
         all.clear()
         free.clear()
+        idleSince.clear()
     }
 }
 

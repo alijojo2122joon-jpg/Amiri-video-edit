@@ -23,8 +23,6 @@ import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -125,10 +123,9 @@ internal fun BackgroundPanel(c: EditorController) {
             FillMode.BLUR -> {
                 Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Blur", color = Amiri.TextSecondary, fontSize = 12.sp, modifier = Modifier.width(48.dp))
-                    Slider(
+                    com.amiri.cut.ui.common.AmiriSlider(
                         value = fill.blur, onValueChange = { v -> c.setFill("Blur", live = true) { it.copy(blur = v) } },
                         onValueChangeFinished = { c.endEdit("Background blur") },
-                        colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = accent, inactiveTrackColor = Amiri.SurfaceHighest),
                         modifier = Modifier.weight(1f),
                     )
                     Text("${(fill.blur * 100).roundToInt()}", color = Amiri.TextSecondary, fontSize = 12.sp, modifier = Modifier.width(36.dp).padding(start = 8.dp))
@@ -165,8 +162,8 @@ private fun ModeTile(label: String, icon: ImageVector, on: Boolean, modifier: Mo
     val accent = LocalAccent.current
     val view = LocalView.current
     Column(
-        modifier.height(76.dp).clip(RoundedCornerShape(16.dp))
-            .background(if (on) accent else Amiri.SurfaceHigh)
+        modifier.height(78.dp).clip(RoundedCornerShape(18.dp))
+            .background(if (on) Amiri.accentBrush(accent) else androidx.compose.ui.graphics.SolidColor(Amiri.SurfaceHigh))
             .clickable { Haptics.select(view); onClick() },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,

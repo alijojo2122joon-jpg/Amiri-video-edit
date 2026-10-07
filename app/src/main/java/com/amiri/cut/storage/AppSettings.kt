@@ -16,6 +16,7 @@ enum class PreviewQuality(val label: String, val scale: Float) { FULL("Full", 1f
 
 /** Accent colours, named after cat coats and eyes 🐾. */
 enum class AccentChoice(val label: String, val argb: Long) {
+    AMIRI("Amiri Violet", 0xFF7C5CFF),
     GINGER("Ginger", 0xFFF4A261),
     AMBER("Tabby Honey", 0xFFF2C47E),
     ROSE("Pink Nose", 0xFFF2A0B4),
@@ -29,8 +30,19 @@ enum class AccentChoice(val label: String, val argb: Long) {
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("amiri_settings", Context.MODE_PRIVATE)
 
+    init {
+        // 2.0 redesign: the brand violet becomes the default accent once (a coat picked
+        // afterwards in Settings is kept as usual).
+        if (!prefs.getBoolean("designV2", false)) {
+            val old = prefs.getString("accent", null)
+            prefs.edit().putBoolean("designV2", true).apply {
+                if (old == null || old == AccentChoice.GINGER.name) putString("accent", AccentChoice.AMIRI.name)
+            }.apply()
+        }
+    }
+
     var accent by mutableStateOf(
-        runCatching { AccentChoice.valueOf(prefs.getString("accent", AccentChoice.GINGER.name)!!) }.getOrDefault(AccentChoice.GINGER)
+        runCatching { AccentChoice.valueOf(prefs.getString("accent", AccentChoice.AMIRI.name)!!) }.getOrDefault(AccentChoice.AMIRI)
     )
         private set
 

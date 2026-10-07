@@ -60,9 +60,13 @@ object Transcode {
         )
     }
 
+    /** Upright pixel size of [asset]'s preview proxy. */
+    fun proxySize(asset: MediaAsset): Pair<Int, Int> =
+        evenSize(asset.displayWidth.coerceAtLeast(16), asset.displayHeight.coerceAtLeast(16), 960)
+
     /** Builds a 540p proxy and returns its file URI. */
     fun proxy(context: Context, app: AmiriCutApp, asset: MediaAsset, cancelled: AtomicBoolean, onProgress: (Float) -> Unit): String {
-        val (w, h) = evenSize(asset.displayWidth.coerceAtLeast(16), asset.displayHeight.coerceAtLeast(16), 960)
+        val (w, h) = proxySize(asset)
         val dir = File(app.caches.dir(com.amiri.cut.storage.CacheManager.Kind.PROXY), "").apply { mkdirs() }
         val out = File(dir, "${asset.id}.mp4")
         val p = singleClipProject(asset, w, h, 30)

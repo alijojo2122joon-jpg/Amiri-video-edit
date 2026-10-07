@@ -21,6 +21,8 @@ varying vec2 vUv;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 vec3 unpremul(vec4 s) { return s.a > 0.0001 ? s.rgb / s.a : vec3(0.0); }
+// ±½ step of 8-bit dither (interleaved gradient noise): keeps graded skies and vignettes free of banding.
+vec3 dither8() { return vec3(fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0; }
 """
 
     // ───────────────────────── input pass (source → layer, with masks) ─────────────────────────
@@ -88,12 +90,71 @@ float maskAlpha(vec2 glUv) {
 }
 """
 
+    /**
+     * Source resampling for the input pass (needs `fetch(tc)` and `toTc(uv)` defined first).
+     * Shrinking (a 4K clip or a 12 MP photo drawn into a 1080p layer): box-filtered
+     * supersampling over each layer pixel's footprint — no shimmering, jagged edges or moiré.
+     * Enlarging: Catmull-Rom bicubic (9 bilinear taps) — crisper than plain bilinear.
+     */
+    private const val RESAMPLE = """
+uniform vec2 uTaps;    // supersampling taps per axis (1 = single tap)
+uniform vec2 uPx;      // one layer pixel in layer uv
+uniform float uCubic;  // 1 = bicubic enlargement
+uniform vec2 uTexel;   // one source texel in texture coordinates
+uniform vec4 uTcBox;   // valid texture-coordinate box (crop of the decoded frame)
+
+vec4 fetchC(vec2 tc) { return fetch(clamp(tc, uTcBox.xy, uTcBox.zw)); }
+
+vec4 cubicTc(vec2 tc) {
+  vec2 sp = tc / uTexel;
+  vec2 t1 = floor(sp - 0.5) + 0.5;
+  vec2 f = sp - t1;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 p0 = (t1 - 1.0) * uTexel;
+  vec2 p3 = (t1 + 2.0) * uTexel;
+  vec2 p12 = (t1 + w2 / w12) * uTexel;
+  vec4 r = fetchC(vec2(p0.x, p0.y)) * (w0.x * w0.y)
+         + fetchC(vec2(p12.x, p0.y)) * (w12.x * w0.y)
+         + fetchC(vec2(p3.x, p0.y)) * (w3.x * w0.y)
+         + fetchC(vec2(p0.x, p12.y)) * (w0.x * w12.y)
+         + fetchC(vec2(p12.x, p12.y)) * (w12.x * w12.y)
+         + fetchC(vec2(p3.x, p12.y)) * (w3.x * w12.y)
+         + fetchC(vec2(p0.x, p3.y)) * (w0.x * w3.y)
+         + fetchC(vec2(p12.x, p3.y)) * (w12.x * w3.y)
+         + fetchC(vec2(p3.x, p3.y)) * (w3.x * w3.y);
+  return r;
+}
+
+vec4 resample(vec2 uv) {
+  if (uCubic > 0.5) return cubicTc(toTc(uv));
+  if (uTaps.x < 1.5 && uTaps.y < 1.5) return fetchC(toTc(uv));
+  vec4 acc = vec4(0.0);
+  float n = 0.0;
+  for (int j = 0; j < 6; j++) {
+    if (float(j) >= uTaps.y) break;
+    for (int i = 0; i < 6; i++) {
+      if (float(i) >= uTaps.x) break;
+      vec2 o = ((vec2(float(i), float(j)) + 0.5) / uTaps - 0.5) * uPx;
+      acc += fetchC(toTc(uv + o));
+      n += 1.0;
+    }
+  }
+  return acc / n;
+}
+"""
+
     const val INPUT_OES = "#extension GL_OES_EGL_image_external : require\n" + COMMON + MASKS + """
 uniform samplerExternalOES uTex;
 uniform mat4 uTexMatrix;
+vec4 fetch(vec2 tc) { return texture2D(uTex, tc); }
+vec2 toTc(vec2 uv) { return (uTexMatrix * vec4(uv, 0.0, 1.0)).xy; }
+""" + RESAMPLE + """
 void main() {
-  vec2 tc = (uTexMatrix * vec4(vUv, 0.0, 1.0)).xy;
-  vec4 c = texture2D(uTex, tc);
+  vec4 c = clamp(resample(vUv), 0.0, 1.0);
   c.a = 1.0;
   gl_FragColor = c * maskAlpha(vUv);
 }
@@ -101,8 +162,12 @@ void main() {
 
     const val INPUT_2D = COMMON + MASKS + """
 uniform sampler2D uTex;
+vec4 fetch(vec2 tc) { return texture2D(uTex, tc); }
+vec2 toTc(vec2 uv) { return vec2(uv.x, 1.0 - uv.y); }
+""" + RESAMPLE + """
 void main() {
-  vec4 c = texture2D(uTex, vec2(vUv.x, 1.0 - vUv.y));
+  vec4 c = clamp(resample(vUv), 0.0, 1.0);
+  c.rgb = min(c.rgb, vec3(c.a));
   gl_FragColor = c * maskAlpha(vUv);
 }
 """
@@ -117,6 +182,34 @@ uniform int uSamples;
 uniform vec4 uCrop;
 uniform float uOpacity;
 uniform int uBlend;
+uniform float uCubic;      // 1 = bicubic sampling (layer shown larger than its pixels)
+uniform vec2 uLayerTexel;  // one layer pixel in uv
+
+vec4 layerCubic(vec2 tc) {
+  vec2 sp = tc / uLayerTexel;
+  vec2 t1 = floor(sp - 0.5) + 0.5;
+  vec2 f = sp - t1;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 p0 = (t1 - 1.0) * uLayerTexel;
+  vec2 p3 = (t1 + 2.0) * uLayerTexel;
+  vec2 p12 = (t1 + w2 / w12) * uLayerTexel;
+  vec4 r = texture2D(uLayer, vec2(p0.x, p0.y)) * (w0.x * w0.y)
+         + texture2D(uLayer, vec2(p12.x, p0.y)) * (w12.x * w0.y)
+         + texture2D(uLayer, vec2(p3.x, p0.y)) * (w3.x * w0.y)
+         + texture2D(uLayer, vec2(p0.x, p12.y)) * (w0.x * w12.y)
+         + texture2D(uLayer, vec2(p12.x, p12.y)) * (w12.x * w12.y)
+         + texture2D(uLayer, vec2(p3.x, p12.y)) * (w3.x * w12.y)
+         + texture2D(uLayer, vec2(p0.x, p3.y)) * (w0.x * w3.y)
+         + texture2D(uLayer, vec2(p12.x, p3.y)) * (w12.x * w3.y)
+         + texture2D(uLayer, vec2(p3.x, p3.y)) * (w3.x * w3.y);
+  r = clamp(r, 0.0, 1.0);
+  r.rgb = min(r.rgb, vec3(r.a));
+  return r;
+}
 
 vec3 blendF(vec3 b, vec3 s) {
   if (uBlend == 1) return b + s - b * s;
@@ -135,9 +228,17 @@ void main() {
   vec4 acc = vec4(0.0);
   for (int i = 0; i < 12; i++) {
     if (i >= uSamples) break;
-    vec3 uv = uInv[i] * p;
-    float inside = step(uCrop.x, uv.x) * step(uv.x, 1.0 - uCrop.z) * step(uCrop.w, uv.y) * step(uv.y, 1.0 - uCrop.y);
-    acc += texture2D(uLayer, uv.xy) * inside;
+    mat3 m = uInv[i];
+    vec3 uv = m * p;
+    // Anti-aliased edges: distance to each (cropped) edge measured in canvas pixels.
+    float pu = max(length(vec2(m[0][0], m[1][0])), 1e-7);
+    float pv = max(length(vec2(m[0][1], m[1][1])), 1e-7);
+    float inside = clamp((uv.x - uCrop.x) / pu + 0.5, 0.0, 1.0)
+                 * clamp((1.0 - uCrop.z - uv.x) / pu + 0.5, 0.0, 1.0)
+                 * clamp((uv.y - uCrop.w) / pv + 0.5, 0.0, 1.0)
+                 * clamp((1.0 - uCrop.y - uv.y) / pv + 0.5, 0.0, 1.0);
+    vec4 s = (uCubic > 0.5) ? layerCubic(uv.xy) : texture2D(uLayer, uv.xy);
+    acc += s * inside;
   }
   vec4 src = acc / float(uSamples) * uOpacity;
   vec4 dst = texture2D(uDst, vUv);
@@ -360,7 +461,7 @@ void main() {
     float r = length(d) / length(vec2(0.5 * uAspect, 0.5));
     c *= 1.0 - uVignette * smoothstep(1.0 - uVigFeather * 0.9 - 0.05, 1.05, r);
   }
-  gl_FragColor = vec4(clamp(c, 0.0, 1.0) * a, a);
+  gl_FragColor = vec4(clamp(c + dither8(), 0.0, 1.0) * a, a);
 }
 """
 
@@ -1128,7 +1229,8 @@ void main() {
   d.x *= mix(1.0, uAspect, uRound);
   float r = length(d) / length(vec2(0.5 * mix(1.0, uAspect, uRound), 0.5));
   float v = 1.0 - uAmount * smoothstep(1.0 - uFeather * 0.9 - 0.05, 1.05, r);
-  gl_FragColor = vec4(s.rgb * v, s.a);
+  vec3 o = clamp(s.rgb * v + dither8() * s.a, 0.0, 1.0);
+  gl_FragColor = vec4(min(o, vec3(s.a)), s.a);
 }
 """
 }

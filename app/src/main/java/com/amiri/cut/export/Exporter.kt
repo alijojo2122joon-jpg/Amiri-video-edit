@@ -77,14 +77,7 @@ class Exporter(
         val w = settings.width
         val h = settings.height
         val bitrate = settings.bitrate ?: EncoderCaps.bitrate(w, h, fps, settings.quality, settings.codec)
-        val format = MediaFormat.createVideoFormat(settings.codec.mime, w, h).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        }
-        val encoder = MediaCodec.createEncoderByType(settings.codec.mime)
-        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val encoder = openEncoder(w, h, bitrate)
         val inputSurface = encoder.createInputSurface()
         encoder.start()
 
@@ -92,7 +85,10 @@ class Exporter(
         egl.makeCurrent(inputSurface)
         val compositor = Compositor(TextRenderer(app.fonts))
         val decoders = HashMap<String, ExportDecoder>()
-        val images = HashMap<String, Bitmap>()
+        // Most recently used photos only: long slideshows must not hold every bitmap at once.
+        val images = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 10
+        }
         val luts = HashMap<String, LutLoader.Lut?>()
         val sources = object : FrameSources {
             override fun video(clip: Clip, asset: MediaAsset): VideoFrame? {
@@ -186,6 +182,29 @@ class Exporter(
     }
 
     @Volatile private var currentT = 0L
+
+    /**
+     * Opens the video encoder with the quality-tuned format (High profile, right level, VBR);
+     * if this device's encoder rejects any of it, falls back to the plain format.
+     */
+    private fun openEncoder(w: Int, h: Int, bitrate: Int): MediaCodec {
+        val codec = settings.codec
+        EncoderCaps.pick(codec, w, h, fps)?.let { info ->
+            val enc = runCatching { MediaCodec.createByCodecName(info.name) }.getOrNull()
+            if (enc != null) {
+                try {
+                    enc.configure(EncoderCaps.tunedFormat(info, codec, w, h, fps, bitrate), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    return enc
+                } catch (t: Throwable) {
+                    android.util.Log.w("AmiriExport", "Tuned encoder format rejected by ${info.name}; using the basic one", t)
+                    runCatching { enc.release() }
+                }
+            }
+        }
+        val enc = MediaCodec.createEncoderByType(codec.mime)
+        enc.configure(EncoderCaps.basicFormat(codec, w, h, fps, bitrate), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        return enc
+    }
 
     private class EncodedAudio(val format: MediaFormat?, val samples: List<Pair<ByteArray, MediaCodec.BufferInfo>>)
 

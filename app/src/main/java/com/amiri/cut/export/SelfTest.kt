@@ -60,6 +60,26 @@ object SelfTest {
                 val (p2, shp) = TimelineOps.addPathShape(p, 0, listOf(0.2f, 0.3f, 0f, 0f, 0.1f, 0f, 0.8f, 0.7f, -0.1f, 0f, 0f, 0f), false)
                 p = TimelineOps.updateClip(p2, shp.id) { c -> c.copy(effects = listOf(Effect(newId(), "saber", opts = mapOf("source" to "Layer path")))) } ?: p2
                 p = TimelineOps.addShape(p, 500_000L, ShapeKind.STAR).first
+                // Clip animations + an art sticker: exercises zoomed (high-density) layers,
+                // bicubic compositing and the photo resampler.
+                p = TimelineOps.updateClip(p, first.id) { c -> c.copy(anim = com.amiri.cut.core.model.ClipAnim(inId = "zoomIn")) } ?: p
+                p = TimelineOps.updateClip(p, second.id) { c -> c.copy(anim = com.amiri.cut.core.model.ClipAnim(comboId = "kenBurnsIn")) } ?: p
+                val sticker = kotlinx.coroutines.withContext(Dispatchers.Default) {
+                    runCatching {
+                        val bmp = com.amiri.cut.ui.editor.StickerArt.render("paw", 640)
+                        val f = File(dir, "selftest-sticker.png")
+                        f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                        com.amiri.cut.core.model.MediaAsset(
+                            id = newId(), uri = Uri.fromFile(f).toString(), type = com.amiri.cut.core.model.MediaType.IMAGE,
+                            name = "Sticker paw", durationUs = 0, width = bmp.width, height = bmp.height,
+                        )
+                    }.onFailure { Log.e(TAG, "sticker failed", it) }.getOrNull()
+                }
+                if (sticker != null) TimelineOps.placeOverlay(p, sticker, 300_000L, 2_000_000L, 0.38f)?.let { (pp, sc) ->
+                    p = TimelineOps.updateClip(pp, sc.id) { c -> c.copy(anim = com.amiri.cut.core.model.ClipAnim(inId = "pop", comboId = "rock")) } ?: pp
+                }
+                Log.i(TAG, "STICKER ${sticker != null}")
+                Log.i(TAG, "ENCODER ${runCatching { EncoderCaps.describe(VideoCodec.H264, 720, 1280, 30, ExportQuality.HIGH) }.getOrElse { "error $it" }}")
                 val json = app.projects.json.encodeToString(Project.serializer(), p)
                 val out = File(dir, "selftest-out.mp4")
                 out.delete()
@@ -105,6 +125,7 @@ object SelfTest {
                 while (waited < 600) {
                     val j = ExportQueue.jobs.value.lastOrNull { it.name == "selftest" }
                     if (j != null && (j.state == JobState.DONE || j.state == JobState.FAILED || j.state == JobState.CANCELLED)) {
+                        Log.i(TAG, "ENCODED ${encodedInfo(out)}")
                         Log.i(TAG, "RESULT ${j.state} error=${j.error} bytes=${out.length()}")
                         return@launch
                     }
@@ -118,4 +139,31 @@ object SelfTest {
             }
         }
     }
+
+    /** Codec, size, H.264 profile/level (from the SPS) and bitrate of the exported file. */
+    private fun encodedInfo(f: File): String = runCatching {
+        val ex = android.media.MediaExtractor()
+        try {
+            ex.setDataSource(f.absolutePath)
+            val fmt = (0 until ex.trackCount).map { ex.getTrackFormat(it) }
+                .firstOrNull { it.getString(android.media.MediaFormat.KEY_MIME)?.startsWith("video/") == true }
+                ?: return@runCatching "no video track"
+            var prof = -1
+            var lvl = -1
+            fmt.getByteBuffer("csd-0")?.let { bb ->
+                val b = ByteArray(bb.remaining()); bb.get(b)
+                for (i in 0 until b.size - 6) {
+                    if (b[i].toInt() == 0 && b[i + 1].toInt() == 0 && b[i + 2].toInt() == 1 && (b[i + 3].toInt() and 0x1f) == 7) {
+                        prof = b[i + 4].toInt() and 0xff; lvl = b[i + 6].toInt() and 0xff; break
+                    }
+                }
+            }
+            val durUs = if (fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) fmt.getLong(android.media.MediaFormat.KEY_DURATION) else 0L
+            val kbps = if (durUs > 0) f.length() * 8_000L / durUs else -1L
+            "${fmt.getString(android.media.MediaFormat.KEY_MIME)} ${fmt.getInteger(android.media.MediaFormat.KEY_WIDTH)}x${fmt.getInteger(android.media.MediaFormat.KEY_HEIGHT)} " +
+                "profile_idc=$prof level_idc=$lvl avg_kbps=$kbps"
+        } finally {
+            ex.release()
+        }
+    }.getOrElse { "error $it" }
 }

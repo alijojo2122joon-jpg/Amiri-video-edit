@@ -61,6 +61,11 @@ class PreviewRenderer(
             val fs = engine.frameState ?: return null
             val slot = fs.slotOfClip[clip.id] ?: return null
             if (sts[slot] == null) return null
+            // Proxy frames are smaller than the original: tell the resampler their real size.
+            if (engine.useProxies && asset.proxyUri != null) {
+                val (pw, ph) = com.amiri.cut.export.Transcode.proxySize(asset)
+                return com.amiri.cut.render.VideoFrame(oes[slot], mats[slot], pw, ph)
+            }
             return com.amiri.cut.render.VideoFrame(oes[slot], mats[slot])
         }
 

@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -662,6 +663,7 @@ private fun HeaderIcon(icon: ImageVector, active: Boolean, onClick: () -> Unit) 
 // ───────────────────────────── drawing ─────────────────────────────
 
 private fun laneColor(track: Track, clip: Clip): Color = when {
+    clip.name.startsWith("Sticker") -> Amiri.ClipSticker
     clip.kind == ClipKind.TEXT -> Amiri.ClipText
     clip.kind == ClipKind.SHAPE -> Amiri.ClipShape
     clip.kind == ClipKind.ADJUSTMENT -> Amiri.ClipAdjust
@@ -736,7 +738,8 @@ private fun DrawScope.drawTimeline(
                 val mx = geo.xOf(first.startUs) - 50f * dp
                 if (mx > -40f * dp) {
                     val r = Rect(Offset(mx, y + bh / 2f - 19f * dp), Size(38f * dp, 38f * dp))
-                    drawRoundRect(Amiri.SurfaceHigh, r.topLeft, r.size, CornerRadius(10f * dp))
+                    drawRoundRect(Amiri.SurfaceHigh, r.topLeft, r.size, CornerRadius(12f * dp))
+                    drawRoundRect(Amiri.Line, r.topLeft, r.size, CornerRadius(12f * dp), style = Stroke(1f * dp))
                     val ic = if (t.muted) icons.volOff else icons.volUp
                     translate(r.left + 9f * dp, r.top + 9f * dp) { with(ic) { draw(Size(20f * dp, 20f * dp), colorFilter = ColorFilter.tint(if (t.muted) Amiri.Danger else Amiri.TextPrimary)) } }
                     geo.muteBtn = r
@@ -745,7 +748,7 @@ private fun DrawScope.drawTimeline(
                 if (ex < w + 10f * dp) {
                     val s = min(40f * dp, bh - 8f * dp)
                     val r = Rect(Offset(ex, y + bh / 2f - s / 2f), Size(s, s))
-                    drawRoundRect(Color.White, r.topLeft, r.size, CornerRadius(9f * dp))
+                    drawRoundRect(Color.White, r.topLeft, r.size, CornerRadius(11f * dp))
                     translate(r.left + (s - 24f * dp) / 2f, r.top + (s - 24f * dp) / 2f) { with(icons.add) { draw(Size(24f * dp, 24f * dp), colorFilter = ColorFilter.tint(Color.Black)) } }
                     geo.addBtn = r
                 }
@@ -759,8 +762,9 @@ private fun DrawScope.drawTimeline(
             val y = geo.rulerH + geo.addAudioTop - geo.scrollY
             val left = max(geo.xOf(0), 8f * dp)
             val r = Rect(Offset(left, y), Size(max(w - left - 8f * dp, 140f * dp), geo.addAudioH))
-            drawRoundRect(Amiri.SurfaceHigh, r.topLeft, r.size, CornerRadius(8f * dp))
-            val lay = measurer.measure("＋  Add audio", TextStyle(color = Amiri.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, fontFamily = AmiriFont))
+            drawRoundRect(Amiri.SurfaceHigh, r.topLeft, r.size, CornerRadius(10f * dp))
+            drawRoundRect(Amiri.Line, r.topLeft, r.size, CornerRadius(10f * dp), style = Stroke(1f * dp))
+            val lay = measurer.measure("＋  Add audio", TextStyle(color = Amiri.TextSecondary, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = AmiriFont))
             drawText(lay, topLeft = Offset(r.left + 12f * dp, r.top + (r.height - lay.size.height) / 2f))
             geo.addAudioBtn = r
         }
@@ -817,8 +821,9 @@ private fun DrawScope.drawTimeline(
 
     // Playhead (fixed at center; the timeline scrolls beneath it)
     val cx = geo.centerX
+    drawLine(Color.Black.copy(alpha = 0.45f), Offset(cx, rulerH * 0.35f), Offset(cx, size.height), 5f * dp)
     drawLine(Color.White, Offset(cx, rulerH * 0.35f), Offset(cx, size.height), 2f * dp)
-    paw(Offset(cx, rulerH * 0.34f), rulerH * 0.62f, accent)
+    paw(Offset(cx, rulerH * 0.36f), rulerH * 0.66f, Color.White)
 }
 
 private fun DrawScope.drawHatch(o: Offset, s: Size) {
@@ -857,19 +862,22 @@ private fun DrawScope.drawClip(
     val left = max(x0 + gap, -8f)
     val right = min(x1 - gap, w + 8f)
     if (right <= left) return
-    val rr = CornerRadius(7f * dp, 7f * dp)
+    val rr = CornerRadius(8f * dp, 8f * dp)
     val selected = clip.id == geo.selectedId
     val asset = project.asset(clip.assetId)
     val missing = asset != null && clip.assetId in c.missingAssets
     val lane = laneColor(track, clip)
     val isMediaVisual = clip.kind == ClipKind.MEDIA && track.kind != TrackKind.AUDIO
     val bodyColor = when {
-        isMediaVisual -> Color(0xFF15171C)
-        track.kind == TrackKind.AUDIO -> lane.copy(alpha = 0.26f)
+        isMediaVisual -> Amiri.ClipVideo
+        track.kind == TrackKind.AUDIO -> lane.copy(alpha = 0.22f)
         else -> lane
     }
     val roundPath = Path().apply { addRoundRect(androidx.compose.ui.geometry.RoundRect(left, top, right, top + h, rr)) }
-    drawPath(roundPath, bodyColor.copy(alpha = if (ghost) 0.75f * bodyColor.alpha else bodyColor.alpha))
+    if (!isMediaVisual && track.kind != TrackKind.AUDIO) {
+        // lane clips: soft vertical sheen so they read as solid, tappable objects
+        drawPath(roundPath, Brush.verticalGradient(listOf(androidx.compose.ui.graphics.lerp(lane, Color.White, 0.12f), lane), top, top + h), alpha = if (ghost) 0.75f else 1f)
+    } else drawPath(roundPath, bodyColor.copy(alpha = if (ghost) 0.75f * bodyColor.alpha else bodyColor.alpha))
 
     clipPath(roundPath) {
         if (asset != null && isMediaVisual) {
@@ -933,7 +941,7 @@ private fun DrawScope.drawClip(
         val onLane = clip.kind == ClipKind.TEXT || clip.kind == ClipKind.SHAPE || clip.kind == ClipKind.ADJUSTMENT
         val textCol = when {
             missing -> Amiri.Danger
-            onLane -> Color(0xFF17110A)
+            onLane && lane.luminance() > 0.35f -> Color(0xFF17110A)
             else -> Color.White
         }
         val showLabel = !isMediaVisual || track.kind == TrackKind.OVERLAY || (right - left) > 220f * dp
@@ -974,7 +982,7 @@ private fun DrawScope.drawClip(
 
     when {
         invalid -> drawPath(roundPath, Amiri.Danger, style = Stroke(2f * dp))
-        selected || ghost -> drawPath(roundPath, Color.White, style = Stroke(2f * dp))
+        selected || ghost -> drawPath(roundPath, Color.White, style = Stroke(2.2f * dp))
         isMediaVisual && track.kind == TrackKind.OVERLAY -> drawPath(roundPath, Amiri.ClipOverlay.copy(alpha = 0.9f), style = Stroke(1.5f * dp))
         else -> drawPath(roundPath, Color.White.copy(alpha = 0.06f), style = Stroke(1f))
     }
@@ -1049,14 +1057,20 @@ private fun DrawScope.drawClip(
         val hw = geo.handleW
         val locked = clip.locked || track.locked
         val handleColor = if (locked) Amiri.TextTertiary else Color.White
-        val grip = Color.Black.copy(alpha = 0.55f)
+        val grip = Color.Black.copy(alpha = 0.7f)
+        val cy = top + h / 2f
+        val cw = hw * 0.18f
         if (x0 > -hw) {
-            drawRoundRect(handleColor, Offset(x0 - hw + 2f * dp, top), Size(hw, h), CornerRadius(6f * dp, 6f * dp))
-            drawLine(grip, Offset(x0 - hw / 2f + 2f * dp, top + h * 0.32f), Offset(x0 - hw / 2f + 2f * dp, top + h * 0.68f), 2f * dp)
+            drawRoundRect(handleColor, Offset(x0 - hw + 2f * dp, top), Size(hw, h), CornerRadius(7f * dp, 7f * dp))
+            val gx = x0 - hw / 2f + 2f * dp
+            val chev = Path().apply { moveTo(gx + cw, cy - cw * 1.8f); lineTo(gx - cw, cy); lineTo(gx + cw, cy + cw * 1.8f) }
+            drawPath(chev, grip, style = Stroke(2f * dp, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
         }
         if (x1 < w + hw) {
-            drawRoundRect(handleColor, Offset(x1 - 2f * dp, top), Size(hw, h), CornerRadius(6f * dp, 6f * dp))
-            drawLine(grip, Offset(x1 + hw / 2f - 2f * dp, top + h * 0.32f), Offset(x1 + hw / 2f - 2f * dp, top + h * 0.68f), 2f * dp)
+            drawRoundRect(handleColor, Offset(x1 - 2f * dp, top), Size(hw, h), CornerRadius(7f * dp, 7f * dp))
+            val gx = x1 + hw / 2f - 2f * dp
+            val chev = Path().apply { moveTo(gx - cw, cy - cw * 1.8f); lineTo(gx + cw, cy); lineTo(gx - cw, cy + cw * 1.8f) }
+            drawPath(chev, grip, style = Stroke(2f * dp, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
         }
     }
 }
@@ -1076,7 +1090,7 @@ private fun DrawScope.drawRuler(geo: TimelineGeometry, fps: Int, measurer: andro
     val tStart = max(0.0, geo.usAt(0f).toDouble())
     val tEnd = geo.usAt(w).toDouble()
     var i = floor(tStart / minor).toLong()
-    val style = TextStyle(color = Amiri.TextTertiary, fontSize = 10.sp, fontFamily = AmiriFont, fontWeight = FontWeight.Medium, fontFeatureSettings = "tnum")
+    val style = TextStyle(color = Amiri.TextTertiary, fontSize = 10.sp, fontFamily = AmiriFont, fontWeight = FontWeight.SemiBold, fontFeatureSettings = "tnum")
     while (true) {
         val t = i * minor
         if (t > tEnd) break

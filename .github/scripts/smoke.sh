@@ -20,7 +20,7 @@ adb logcat -d -b crash > crash.txt
 cat log.txt; cat crash.txt
 emit() { while IFS= read -r l; do echo "::$1::${l//%/%25}"; done; }
 grep "RESULT\|progress" log.txt | tail -4 | emit notice
-grep "DENOISE\|CUTOUT\|ROTO" log.txt | emit notice
+grep "DENOISE\|CUTOUT\|ROTO\|ENCODER\|ENCODED\|STICKER" log.txt | emit notice
 [ "$died" = 1 ] && echo "::error::app process died during the self-test"
 head -80 crash.txt | emit error
 grep -E "foreground|failed|FATAL|Exception:" log.txt | head -40 | emit warning
@@ -37,12 +37,22 @@ if [ -d "$G" ]; then
   for f in demo1.mp4 demo2.mp4 demo_cat.jpg demo_overlay.png demo_music.wav; do adb push "$G/$f" /sdcard/Android/data/$PKG/files/$f >/dev/null; done
   SCAN=$(ls "$G"/gallery | sed 's#^#/sdcard/DCIM/Camera/#' | paste -sd, -)
   mkdir -p ui-shots
+  # Keep system dialogs out of the screenshots: the emulator's launcher often ANRs under
+  # swiftshader. Hide error/ANR dialogs and disable the launcher (we start the app directly).
+  adb shell settings put global hide_error_dialogs 1 || true
+  adb shell settings put secure anr_show_background 0 || true
+  HOMEPKG=$(adb shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -1 | cut -d/ -f1 | tr -d '\r')
+  if [ -n "$HOMEPKG" ] && [ "$HOMEPKG" != "android" ] && [ "$HOMEPKG" != "$PKG" ]; then
+    adb shell pm disable-user --user 0 "$HOMEPKG" || true
+  fi
   shot() {
     local name=$1 screen=$2 wait=$3
     adb shell am force-stop $PKG
     sleep 1
     adb shell am start -W -n $PKG/.MainActivity --es amiri_screen "$screen" --es amiri_scan "$SCAN" >/dev/null
     sleep "$wait"
+    adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null 2>&1 || true
+    sleep 1
     adb exec-out screencap -p > "ui-shots/$name.png"
     echo "shot $name: $(stat -c %s ui-shots/$name.png) bytes"
   }
@@ -50,12 +60,15 @@ if [ -d "$G" ]; then
   shot 02-picker picker 9
   shot 03-editor editor 14
   shot 04-editor-selected editor_sel 12
-  shot 05-filters editor:FILTERS 12
-  shot 06-ratio editor:RATIO 12
-  shot 07-background editor:BACKGROUND 12
-  shot 08-text editor:TEXT 12
-  shot 09-audio editor:AUDIO 12
-  shot 10-export export 12
+  shot 05-animation editor:ANIMATION 13
+  shot 06-stickers editor:STICKERS 14
+  shot 07-filters editor:FILTERS 12
+  shot 08-ratio editor:RATIO 12
+  shot 09-text editor:TEXT 12
+  shot 10-audio editor:AUDIO 12
+  shot 11-export export 12
+  shot 12-settings settings 6
+  shot 13-newproject newproject 6
   adb logcat -d -b crash > ui-crash.txt
   head -60 ui-crash.txt | emit error
 fi

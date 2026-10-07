@@ -33,7 +33,7 @@ object UiDemo {
         if (scan.isNotEmpty()) scanFiles(app, scan)
         when {
             screen == "home" -> { seedProjects(app); Plan(screen) }
-            screen == "picker" -> Plan(screen)
+            screen == "picker" || screen == "settings" || screen == "newproject" -> Plan(screen)
             screen.startsWith("editor") || screen == "export" -> {
                 val main = listOfNotNull(file(app, "demo1.mp4"), file(app, "demo_cat.jpg"), file(app, "demo2.mp4"), file(app, "selftest.mp4"))
                     .take(3).map { Uri.fromFile(it) }

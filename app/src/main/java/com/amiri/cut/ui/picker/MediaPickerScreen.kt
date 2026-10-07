@@ -195,8 +195,8 @@ fun MediaPickerScreen(
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     if (tab != Tab.AUDIO && wantsVisual && access != GalleryAccess.NONE) {
                         Row(
-                            Modifier.clip(RoundedCornerShape(50)).background(Amiri.SurfaceHigh).clickable { albumSheet = true }
-                                .padding(start = 14.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                            Modifier.clip(RoundedCornerShape(50)).background(Amiri.SurfaceHigh).border(1.dp, Amiri.Line, RoundedCornerShape(50)).clickable { albumSheet = true }
+                                .padding(start = 16.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(albumName, color = Amiri.TextPrimary, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp))
@@ -214,18 +214,10 @@ fun MediaPickerScreen(
             }
             // ── tabs ──
             if (tabs.size > 1) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                    tabs.forEach { t ->
-                        val on = t == tab
-                        Column(Modifier.clickable { tab = t; Haptics.select(view) }.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(t.label, color = if (on) Amiri.TextPrimary else Amiri.TextTertiary, fontSize = 15.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Medium)
-                            Box(Modifier.padding(top = 6.dp).size(width = 18.dp, height = 3.dp).clip(RoundedCornerShape(2.dp)).background(if (on) accent else Color.Transparent))
-                        }
-                    }
-                }
+                com.amiri.cut.ui.common.UnderlineTabs(tabs, tab, { it.label }, Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { tab = it }
             }
             if (request.title != null && tab != Tab.AUDIO) {
-                Text(request.title, color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+                Text(request.title, color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 6.dp))
             }
             // ── partial access banner ──
             if (tab != Tab.AUDIO && access == GalleryAccess.PARTIAL) {
@@ -268,9 +260,9 @@ fun MediaPickerScreen(
                         if (visual != null && shown.isEmpty()) EmptyNote(if (tab == Tab.PHOTOS) "No photos here." else if (tab == Tab.VIDEOS) "No videos here." else "Nothing here yet.")
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(4),
-                            contentPadding = PaddingValues(start = 2.dp, end = 2.dp, top = 4.dp, bottom = 140.dp),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            contentPadding = PaddingValues(start = 3.dp, end = 3.dp, top = 6.dp, bottom = 150.dp),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
                             modifier = Modifier.fillMaxSize(),
                         ) {
                             items(shown, key = { it.key }) { item ->
@@ -290,43 +282,38 @@ fun MediaPickerScreen(
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)).background(Amiri.Surface)
-                    .navigationBarsPadding().padding(top = 12.dp, bottom = 12.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)).background(Amiri.Surface)
+                    .border(1.dp, Amiri.Line, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                    .navigationBarsPadding().padding(top = 14.dp, bottom = 14.dp),
             ) {
                 val totalMs = selection.sumOf { if (it.kind == GalleryItem.Kind.IMAGE) 3000L else it.durationMs }
-                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         if (selection.size == 1) "1 selected" else "${selection.size} selected",
                         color = Amiri.TextPrimary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
                     )
-                    Text("≈ " + MediaLibrary.durationLabel(totalMs), color = Amiri.TextSecondary, style = com.amiri.cut.ui.theme.MonoStyle, fontSize = 12.sp)
+                    Text("Total " + MediaLibrary.durationLabel(totalMs), color = Amiri.TextSecondary, style = com.amiri.cut.ui.theme.MonoStyle, fontSize = 12.sp)
                 }
-                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     LazyRow(
-                        Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp),
+                        Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 18.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(selection.toList(), key = { "s" + it.key }) { s ->
-                            Box(Modifier.size(54.dp)) {
-                                ThumbImage(s, Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)))
+                            Box(Modifier.size(52.dp)) {
+                                ThumbImage(s, Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)))
                                 Box(
-                                    Modifier.align(Alignment.TopEnd).padding(2.dp).size(18.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.7f))
+                                    Modifier.align(Alignment.TopEnd).padding(3.dp).size(18.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.72f))
                                         .clickable { selection.removeAll { it.key == s.key } },
                                     contentAlignment = Alignment.Center,
                                 ) { Icon(Icons.Outlined.Close, "Remove", tint = Color.White, modifier = Modifier.size(12.dp)) }
                             }
                         }
                     }
-                    Box(
-                        Modifier.padding(end = 16.dp).clip(RoundedCornerShape(14.dp)).background(accent)
-                            .clickable { Haptics.confirm(view); onPicked(selection.map { it.uri }) }
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
-                    ) {
-                        Text(
-                            if (request.multiple && selection.size > 1) "${request.confirm} (${selection.size})" else request.confirm,
-                            color = onAccent(accent), style = MaterialTheme.typography.labelLarge, fontSize = 15.sp,
-                        )
-                    }
+                    com.amiri.cut.ui.common.PrimaryButton(
+                        if (request.multiple && selection.size > 1) "${request.confirm} (${selection.size})" else request.confirm,
+                        Modifier.padding(end = 18.dp), height = 48.dp,
+                    ) { onPicked(selection.map { it.uri }) }
                 }
             }
         }
@@ -367,25 +354,30 @@ internal fun ThumbImage(item: GalleryItem, modifier: Modifier) {
 @Composable
 private fun GalleryTile(item: GalleryItem, index: Int, accent: Color, multiple: Boolean, onClick: () -> Unit, onLong: () -> Unit) {
     val selected = index >= 0
-    val s by animateFloatAsState(if (selected) 0.9f else 1f, label = "tile")
+    val s by animateFloatAsState(if (selected) 0.92f else 1f, label = "tile")
+    val ink = Amiri.accentInk(accent)
     Box(
-        Modifier.aspectRatio(1f).combinedClickable(onClick = onClick, onLongClick = onLong),
+        Modifier.aspectRatio(1f).clip(RoundedCornerShape(4.dp)).combinedClickable(onClick = onClick, onLongClick = onLong),
     ) {
-        ThumbImage(item, Modifier.fillMaxSize().scale(s).clip(RoundedCornerShape(if (selected) 10.dp else 2.dp)))
-        if (selected) Box(Modifier.fillMaxSize().scale(s).clip(RoundedCornerShape(10.dp)).border(2.dp, accent, RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.18f)))
+        ThumbImage(item, Modifier.fillMaxSize().scale(s).clip(RoundedCornerShape(if (selected) 12.dp else 4.dp)))
+        if (selected) Box(Modifier.fillMaxSize().scale(s).clip(RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha = 0.22f)).border(2.5.dp, ink, RoundedCornerShape(12.dp)))
         if (item.kind == GalleryItem.Kind.VIDEO) {
-            Badge(MediaLibrary.durationLabel(item.durationMs), Modifier.align(Alignment.BottomEnd).padding(5.dp))
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxSize(0.38f).background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)))))
+            Text(
+                MediaLibrary.durationLabel(item.durationMs), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                style = com.amiri.cut.ui.theme.MonoStyle, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 5.dp),
+            )
         }
         // selection circle
         Box(
-            Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp).clip(CircleShape)
-                .background(if (selected) accent else Color.Black.copy(alpha = 0.25f))
-                .border(1.5.dp, if (selected) accent else Color.White.copy(alpha = 0.9f), CircleShape),
+            Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).clip(CircleShape)
+                .background(if (selected) Amiri.accentBrush(accent) else androidx.compose.ui.graphics.SolidColor(Color.Black.copy(alpha = 0.28f)))
+                .border(1.5.dp, if (selected) Color.White else Color.White.copy(alpha = 0.92f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             if (selected) {
-                if (multiple) Text("${index + 1}", color = onAccent(accent), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                else Icon(Icons.Outlined.Check, null, tint = onAccent(accent), modifier = Modifier.size(14.dp))
+                if (multiple) Text("${index + 1}", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                else Icon(Icons.Outlined.Check, null, tint = Color.White, modifier = Modifier.size(15.dp))
             }
         }
     }

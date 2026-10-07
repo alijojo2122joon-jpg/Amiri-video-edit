@@ -29,8 +29,11 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-/** A decoded video frame living in an external OES texture. */
-class VideoFrame(val oesTex: Int, val texMatrix: FloatArray)
+/**
+ * A decoded video frame living in an external OES texture. [srcW]×[srcH] is the frame's
+ * upright size when it differs from the asset's (e.g. a 960-px preview proxy); 0 = asset size.
+ */
+class VideoFrame(val oesTex: Int, val texMatrix: FloatArray, val srcW: Int = 0, val srcH: Int = 0)
 
 /** Where the compositor gets its pixels from (preview players or export decoders). */
 interface FrameSources {
@@ -163,6 +166,7 @@ class Compositor(private val text: TextRenderer) {
         p.draw()
         pool.recycle(canvas)
         pool.recycle(spare)
+        pool.endFrame()
     }
 
     /**
@@ -180,7 +184,7 @@ class Compositor(private val text: TextRenderer) {
             clip = c; break
         }
         val c = clip ?: return
-        val layer = buildLayer(project, c, t, cw, ch, src, opt) ?: return
+        val layer = buildLayer(project, c, t, cw, ch, src, opt, resScale = 0.5f) ?: return
         val k = max(cw / layer.baseW, ch / layer.baseH)
         val sx = cw / (layer.baseW * k)
         val sy = ch / (layer.baseH * k)
@@ -213,9 +217,52 @@ class Compositor(private val text: TextRenderer) {
 
     // ───────────────────────────── layers ─────────────────────────────
 
-    private class Layer(val fbo: Fbo, val baseW: Float, val baseH: Float)
+    /**
+     * A built layer: [baseW]×[baseH] is its fitted size in canvas pixels (what transforms act
+     * on); its pixels are stored at [q]× that, and it is shown at [s]× (display scale).
+     */
+    private class Layer(val fbo: Fbo, val baseW: Float, val baseH: Float, val q: Float = 1f, val s: Float = 1f)
 
-    private fun buildLayer(project: Project, clip: Clip, t: Long, cw: Int, ch: Int, src: FrameSources, opt: RenderOptions): Layer? {
+    private val qInv = FloatArray(9)
+
+    /**
+     * How large the clip appears at [t], relative to its fitted size, along its most enlarged
+     * axis (1 = as fitted, 2 = zoomed in 2×, 0.4 = a small picture-in-picture).
+     */
+    private fun displayScale(project: Project, clip: Clip, t: Long, baseW: Float, baseH: Float, cw: Int, ch: Int): Float {
+        LayerMath.inverse(project, clip, t, baseW, baseH, cw, ch, qInv, 0)
+        // Jacobian canvas px → base px (column-major: [0]=du/dx, [1]=dv/dx, [3]=du/dy, [4]=dv/dy).
+        val a = qInv[0] * baseW; val b = qInv[3] * baseW
+        val c = qInv[1] * baseH; val d = qInv[4] * baseH
+        val s1 = a * a + b * b + c * c + d * d
+        val det = abs(a * d - b * c)
+        val disc = kotlin.math.sqrt(max(0f, s1 * s1 - 4f * det * det))
+        val sigMin = kotlin.math.sqrt(max(1e-12f, (s1 - disc) / 2f))
+        val s = 1f / sigMin
+        return if (s.isFinite()) s.coerceIn(0.01f, 64f) else 1f
+    }
+
+    /**
+     * Pixel density of a media layer: follows the display scale so a zoomed-in clip keeps the
+     * source's real detail (up to its native resolution and a GPU budget of 2.25× the canvas),
+     * and a shrunken one is filtered once, cleanly, from the source. Quantized to quarter
+     * octaves so animated zooms reuse a handful of buffer sizes.
+     */
+    private fun layerDensity(s: Float, srcW: Float, srcH: Float, baseW: Float, baseH: Float, cw: Int, ch: Int): Float {
+        val native = max(1f, min(srcW / baseW, srcH / baseH))
+        val budget = kotlin.math.sqrt(2.25f * cw * ch / max(1f, baseW * baseH))
+        val qMax = minOf(native, budget, 4096f / baseW, 4096f / baseH).coerceAtLeast(0.25f)
+        val q = s.coerceIn(0.25f, qMax)
+        // Round up (never store fewer pixels than shown), ignoring the last ~2.5 % of a step.
+        val steps = kotlin.math.ceil(kotlin.math.ln(q) / kotlin.math.ln(2f) * 4f - 0.15f).toInt()
+        return Math.pow(2.0, steps / 4.0).toFloat().coerceIn(0.25f, max(0.25f, qMax))
+    }
+
+    private fun buildLayer(
+        project: Project, clip: Clip, t: Long, cw: Int, ch: Int, src: FrameSources, opt: RenderOptions,
+        /** Fixed pixel density instead of the adaptive one (e.g. 0.5 for the blurred fill). */
+        resScale: Float? = null,
+    ): Layer? {
         val local = t - clip.startUs
         val srcUs = clip.sourceTimeAt(t)
         var oes = false
@@ -225,6 +272,9 @@ class Compositor(private val text: TextRenderer) {
         val sh: Float
         val baseW: Float
         val baseH: Float
+        // Real pixel size of the texture being sampled (upright), for resampling.
+        var pxW: Float
+        var pxH: Float
 
         if (clip.kind == ClipKind.SHAPE) {
             val spec = clip.shape ?: return null
@@ -239,6 +289,7 @@ class Compositor(private val text: TextRenderer) {
             texId = c.tex
             sw = c.w.toFloat(); sh = c.h.toFloat()
             baseW = sw; baseH = sh
+            pxW = sw; pxH = sh
         } else if (clip.kind == ClipKind.TEXT) {
             val spec = clip.text ?: return null
             val key = text.key(spec, local, cw, ch, clip.durationUs)
@@ -252,6 +303,7 @@ class Compositor(private val text: TextRenderer) {
             texId = c.tex
             sw = c.w.toFloat(); sh = c.h.toFloat()
             baseW = sw; baseH = sh
+            pxW = sw; pxH = sh
         } else {
             val asset = project.asset(clip.assetId) ?: return null
             when (asset.type) {
@@ -262,14 +314,20 @@ class Compositor(private val text: TextRenderer) {
                     texMatrix = vf.texMatrix
                     sw = asset.displayWidth.takeIf { it > 0 }?.toFloat() ?: cw.toFloat()
                     sh = asset.displayHeight.takeIf { it > 0 }?.toFloat() ?: ch.toFloat()
+                    pxW = if (vf.srcW > 0) vf.srcW.toFloat() else sw
+                    pxH = if (vf.srcH > 0) vf.srcH.toFloat() else sh
                 }
                 MediaType.IMAGE -> {
                     val bmp = src.image(asset) ?: return null
                     val c = imageTex.getOrPut(asset.id) { Cached(0, null) }
-                    if (c.key !== bmp) { c.tex = Gl.uploadBitmap(bmp, c.tex); c.key = bmp; c.w = bmp.width; c.h = bmp.height }
-                    evict(imageTex, 24)
+                    // Weak key: the texture cache must not keep decoded bitmaps alive.
+                    if ((c.key as? java.lang.ref.WeakReference<*>)?.get() !== bmp) {
+                        c.tex = Gl.uploadBitmap(bmp, c.tex); c.key = java.lang.ref.WeakReference(bmp); c.w = bmp.width; c.h = bmp.height
+                    }
+                    evict(imageTex, 16)
                     texId = c.tex
                     sw = c.w.toFloat(); sh = c.h.toFloat()
+                    pxW = sw; pxH = sh
                 }
                 MediaType.AUDIO -> return null
             }
@@ -278,14 +336,18 @@ class Compositor(private val text: TextRenderer) {
             baseH = sh * fit
         }
 
-        val lw = baseW.roundToInt().coerceIn(2, 4096)
-        val lh = baseH.roundToInt().coerceIn(2, 4096)
+        val media = clip.kind != ClipKind.TEXT && clip.kind != ClipKind.SHAPE
+        val shown = if (resScale == null) displayScale(project, clip, t, baseW, baseH, cw, ch) else 1f
+        val q = resScale ?: if (media) layerDensity(shown, pxW, pxH, baseW, baseH, cw, ch) else 1f
+        val lw = (baseW * q).roundToInt().coerceIn(2, 4096)
+        val lh = (baseH * q).roundToInt().coerceIn(2, 4096)
         val l0 = pool.obtain(lw, lh)
         l0.bind()
         val p = if (oes) prog("in_oes", Shaders.INPUT_OES) else prog("in_2d", Shaders.INPUT_2D)
         p.use()
         p.tex("uTex", 0, texId, oes)
         if (oes) p.mat4("uTexMatrix", texMatrix!!)
+        setResampleUniforms(p, oes, texMatrix, pxW, pxH, lw, lh, media)
         setMaskUniforms(p, clip, local, srcUs, sw / sh, src, opt)
         p.draw()
 
@@ -295,7 +357,31 @@ class Compositor(private val text: TextRenderer) {
             if (opt.bypassColorClipId == clip.id && EffectCatalog.spec(e.type)?.category == com.amiri.cut.core.effects.EffectCategory.COLOR) continue
             cur = applyEffect(e, cur, local, src, clip, cw, ch)
         }
-        return Layer(cur, baseW, baseH)
+        return Layer(cur, baseW, baseH, lw / baseW, shown)
+    }
+
+    /**
+     * Input-pass resampling: supersample when the source has more pixels than the layer
+     * (taps per axis ≈ source pixels per layer pixel), bicubic when it has fewer.
+     */
+    private fun setResampleUniforms(p: Program, oes: Boolean, m: FloatArray?, pxW: Float, pxH: Float, lw: Int, lh: Int, media: Boolean) {
+        val rx = pxW / lw
+        val ry = pxH / lh
+        val tx = if (rx > 1.02f) kotlin.math.ceil(rx - 0.02f).coerceIn(1f, 6f) else 1f
+        val ty = if (ry > 1.02f) kotlin.math.ceil(ry - 0.02f).coerceIn(1f, 6f) else 1f
+        p.f2("uTaps", tx, ty)
+        p.f2("uPx", 1f / lw, 1f / lh)
+        p.f1("uCubic", if (media && rx < 0.98f && ry < 0.98f) 1f else 0f)
+        if (oes && m != null) {
+            // One source pixel along each texture axis, through the (possibly rotated/cropped) matrix.
+            p.f2("uTexel", abs(m[0]) / pxW + abs(m[4]) / pxH, abs(m[1]) / pxW + abs(m[5]) / pxH)
+            val xs = floatArrayOf(m[12], m[0] + m[12], m[4] + m[12], m[0] + m[4] + m[12])
+            val ys = floatArrayOf(m[13], m[1] + m[13], m[5] + m[13], m[1] + m[5] + m[13])
+            p.f4("uTcBox", xs.min(), ys.min(), xs.max(), ys.max())
+        } else {
+            p.f2("uTexel", 1f / pxW, 1f / pxH)
+            p.f4("uTcBox", 0f, 0f, 1f, 1f)
+        }
     }
 
     private val maskA = FloatArray(16)
@@ -313,7 +399,7 @@ class Compositor(private val text: TextRenderer) {
             val bmp = k?.let { src.roto(it.file) }
             if (bmp != null) {
                 val c = rotoTex.getOrPut(k!!.file) { Cached(0, null) }
-                if (c.key !== bmp) { c.tex = Gl.uploadBitmap(bmp, c.tex); c.key = bmp }
+                if ((c.key as? java.lang.ref.WeakReference<*>)?.get() !== bmp) { c.tex = Gl.uploadBitmap(bmp, c.tex); c.key = java.lang.ref.WeakReference(bmp) }
                 evict(rotoTex, 24)
                 rotoTexId = c.tex
                 hasRoto = 1f
@@ -392,6 +478,8 @@ class Compositor(private val text: TextRenderer) {
 
     private val inv = FloatArray(9 * 12)
 
+    private val animXf = com.amiri.cut.core.anim.ClipXf()
+
     private fun composite(project: Project, clip: Clip, layer: Layer, t: Long, canvas: Fbo, out: Fbo, cw: Int, ch: Int) {
         val local = t - clip.startUs
         fun tv(id: String, at: Long = local) = clip.transform.at(id, at, TransformSpec.def(id))
@@ -413,8 +501,12 @@ class Compositor(private val text: TextRenderer) {
         p.i1("uSamples", samples)
         p.f4("uCrop", tv("cropL"), tv("cropT"), tv("cropR"), tv("cropB"))
         val textAlpha = clip.text?.let { com.amiri.cut.core.text.TextAnims.layerXf(it, local, clip.durationUs).alpha } ?: 1f
-        p.f1("uOpacity", (tv("opacity") * textAlpha).coerceIn(0f, 1f))
+        val animAlpha = if (com.amiri.cut.core.anim.ClipAnims.active(clip.anim)) com.amiri.cut.core.anim.ClipAnims.xf(clip.anim, local, clip.durationUs, animXf).alpha else 1f
+        p.f1("uOpacity", (tv("opacity") * textAlpha * animAlpha).coerceIn(0f, 1f))
         p.i1("uBlend", clip.blend.ordinal)
+        // Shown larger than its stored pixels (zoom past the source/budget, scaled text): bicubic.
+        p.f1("uCubic", if (samples == 1 && layer.s / layer.q > 1.1f) 1f else 0f)
+        p.f2("uLayerTexel", 1f / layer.fbo.width, 1f / layer.fbo.height)
         p.draw()
     }
 
@@ -469,7 +561,8 @@ class Compositor(private val text: TextRenderer) {
         val local = t - clip.startUs
         fun g(id: String) = spec.props.at(id, local, com.amiri.cut.core.text.Glass.def(id))
         val st = com.amiri.cut.core.text.Glass.state(spec, local, clip.durationUs, glassState)
-        val op = g("gOpacity") * st.alpha * clip.transform.at("opacity", local, 1f).coerceIn(0f, 1f)
+        val animA = if (com.amiri.cut.core.anim.ClipAnims.active(clip.anim)) com.amiri.cut.core.anim.ClipAnims.xf(clip.anim, local, clip.durationUs).alpha else 1f
+        val op = g("gOpacity") * st.alpha * animA * clip.transform.at("opacity", local, 1f).coerceIn(0f, 1f)
         if (op <= 0.003f) return false
         val pn = text.panel(spec, local, cw, ch)
         LayerMath.inverse(project, clip, t, layer.baseW, layer.baseH, cw, ch, glassInv, 0, textAnim = false)
@@ -950,6 +1043,14 @@ object LayerMath {
                 tsx = ax.sx.toDouble(); tsy = ax.sy.toDouble()
                 rot += ax.rot
             }
+        }
+
+        // Clip animations (In / Out / Combo): same scale/rotation pivot as the layer.
+        if (com.amiri.cut.core.anim.ClipAnims.active(clip.anim)) {
+            val ax2 = com.amiri.cut.core.anim.ClipAnims.xf(clip.anim, local, clip.durationUs)
+            px += ax2.dx; py += ax2.dy
+            tsx *= ax2.sx.toDouble(); tsy *= ax2.sy.toDouble()
+            rot += ax2.rot
         }
 
         // Follow another clip's motion track.

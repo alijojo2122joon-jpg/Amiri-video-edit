@@ -62,8 +62,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -146,12 +144,12 @@ internal fun BusyBar(c: EditorController, b: EditorController.Busy) {
 
 @Composable
 private fun SectionTitle(text: String) {
-    Text(text.uppercase(), color = Amiri.TextSecondary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+    Text(text.uppercase(), color = Amiri.TextTertiary, style = MaterialTheme.typography.labelSmall, letterSpacing = 0.8.sp, modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
 }
 
 @Composable
 private fun Hint(text: String) {
-    Text(text, color = Amiri.TextTertiary, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
+    Text(text, color = Amiri.TextTertiary, fontSize = 11.5.sp, lineHeight = 15.sp, modifier = Modifier.padding(vertical = 5.dp))
 }
 
 @Composable
@@ -185,22 +183,21 @@ internal fun ParamRow(c: EditorController, t: EditorController.PTarget, spec: Pa
     val has = c.keyHere(t, spec.id)
     val anim = c.isAnimated(t, spec.id)
     @Suppress("UNUSED_EXPRESSION") pos
-    Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            label, color = if (anim) accent else Amiri.TextSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            label, color = if (anim) Amiri.accentInk(accent) else Amiri.TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.width(84.dp).combinedClickable(onClick = { c.focusParam = t to spec.id }, onLongClick = {
                 c.setParam(t, spec.id, spec.default, spec.default, live = false, label = "Reset ${spec.label}")
             }),
         )
-        Slider(
+        com.amiri.cut.ui.common.AmiriSlider(
             value = v.coerceIn(spec.min, spec.max),
             onValueChange = { c.focusParam = t to spec.id; c.setParam(t, spec.id, it, spec.default) },
             onValueChangeFinished = { c.endEdit(spec.label) },
             valueRange = spec.min..spec.max,
-            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Amiri.SurfaceHigh),
             modifier = Modifier.weight(1f),
         )
-        Text(spec.format(v), color = Amiri.TextSecondary, fontSize = 10.sp, maxLines = 1, modifier = Modifier.width(46.dp).padding(start = 4.dp))
+        Text(spec.format(v), color = Amiri.TextPrimary, fontSize = 11.sp, style = com.amiri.cut.ui.theme.MonoStyle, maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.width(48.dp).padding(start = 4.dp))
         KeyDiamond(has, anim) { c.focusParam = t to spec.id; c.toggleKey(t, spec.id, spec.default) }
     }
 }
@@ -756,13 +753,14 @@ private fun LookCard(name: String?, selected: Boolean, onClick: () -> Unit) {
     }
     Column(Modifier.width(76.dp).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
-            Modifier.size(width = 72.dp, height = 78.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.Surface)
-                .border(if (selected) 2.dp else 0.5.dp, if (selected) accent else Color.White.copy(alpha = 0.15f), RoundedCornerShape(14.dp)),
+            Modifier.size(width = 72.dp, height = 80.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.SurfaceHigh)
+                .border(if (selected) 2.dp else 1.dp, if (selected) Amiri.accentInk(accent) else Amiri.Line, RoundedCornerShape(14.dp)),
         ) {
             img?.let { androidx.compose.foundation.Image(it, name ?: "Original", Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
         }
-        Text(name ?: "Original", color = if (selected) accent else Amiri.TextSecondary, fontSize = 10.sp, maxLines = 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+        Text(name ?: "Original", color = if (selected) Amiri.accentInk(accent) else Amiri.TextSecondary, fontSize = 10.5.sp, maxLines = 1,
+            fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
     }
 }
 

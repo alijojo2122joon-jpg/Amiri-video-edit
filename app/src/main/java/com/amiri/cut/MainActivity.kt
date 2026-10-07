@@ -14,6 +14,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
@@ -86,15 +88,24 @@ private fun AppNavigation(app: AmiriCutApp, splash: Boolean, demoScreen: String?
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
     fun replace(s: Screen) { stack.removeAt(stack.lastIndex); stack.add(s) }
 
-    // CI screenshot harness: jump straight to the requested screen with demo content.
+    // CI screenshot harness: jump straight to the requested screen with demo content
+    // (nothing is shown until the demo data exists, so Home lists the seeded projects).
+    var demoReady by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(demoScreen == null) }
     if (demoScreen != null) LaunchedEffect(demoScreen) {
         val plan = com.amiri.cut.export.UiDemo.prepare(app, demoScreen, demoScan)
         stack.clear()
         stack.add(Screen.Home)
         when {
             plan.screen == "picker" -> stack.add(Screen.Picker())
+            plan.screen == "settings" -> stack.add(Screen.Settings)
+            plan.screen == "newproject" -> stack.add(Screen.NewProject)
             plan.projectId != null -> stack.add(Screen.Editor(plan.projectId, importUris = plan.uris, demo = plan))
         }
+        demoReady = true
+    }
+    if (!demoReady) {
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().background(Color.Black))
+        return
     }
 
     // The editor handles its own back press (it must save first).
@@ -159,6 +170,8 @@ private fun pickRequestFor(q: com.amiri.cut.ui.editor.QuickStart?): com.amiri.cu
         com.amiri.cut.ui.editor.QuickStart.CLEAN_VOICE -> com.amiri.cut.ui.picker.PickRequest(setOf(V), multiple = false, confirm = "Clean voice", title = "Pick a video with speech")
         com.amiri.cut.ui.editor.QuickStart.STABILIZE -> com.amiri.cut.ui.picker.PickRequest(setOf(V), multiple = false, confirm = "Stabilize", title = "Pick a shaky video")
         com.amiri.cut.ui.editor.QuickStart.BEAT_SYNC -> com.amiri.cut.ui.picker.PickRequest(setOf(V, I), multiple = true, confirm = "Next", title = "Pick the clips to cut on the beat")
+        com.amiri.cut.ui.editor.QuickStart.ANIMATE -> com.amiri.cut.ui.picker.PickRequest(setOf(V, I), multiple = true, confirm = "Animate", title = "Pick the clips to animate")
+        com.amiri.cut.ui.editor.QuickStart.STICKERS -> com.amiri.cut.ui.picker.PickRequest(setOf(V, I), multiple = true, confirm = "Next", title = "Pick a video or photo for your stickers")
     }
 }
 

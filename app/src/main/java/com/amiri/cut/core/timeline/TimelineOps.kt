@@ -172,8 +172,9 @@ object TimelineOps {
         val f = frame(fps)
         if (at - clip.startUs < f || clip.endUs - at < f) return null
         val sourceAt = clip.sourceTimeAt(at)
-        val left = clip.copy(sourceOutUs = sourceAt)
-        val right = clip.copy(id = newId(), startUs = at, sourceInUs = sourceAt, transIn = null).shiftKeys(-(at - clip.startUs))
+        // The entrance animation stays on the left part, the exit moves to the right part.
+        val left = clip.copy(sourceOutUs = sourceAt, anim = clip.anim?.copy(outId = "None"))
+        val right = clip.copy(id = newId(), startUs = at, sourceInUs = sourceAt, transIn = null, anim = clip.anim?.copy(inId = "None")).shiftKeys(-(at - clip.startUs))
         val proj = p.mapTrack(track.id) { t -> t.withClips(t.clips.flatMap { if (it.id == clipId) listOf(left, right) else listOf(it) }) }
         return proj to right
     }

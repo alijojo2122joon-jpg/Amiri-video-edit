@@ -319,6 +319,20 @@ data class Stabilization(
 
 enum class ClipKind { MEDIA, TEXT, SHAPE, ADJUSTMENT }
 
+/**
+ * Clip animations (see ClipAnims): an entrance and an exit preset with their durations in
+ * seconds, and a combo preset that runs across the whole clip. "None" = off.
+ */
+@Serializable
+data class ClipAnim(
+    val inId: String = "None",
+    val inDur: Float = 0.5f,
+    val outId: String = "None",
+    val outDur: Float = 0.5f,
+    val comboId: String = "None",
+    val comboSpeed: Float = 1f,
+)
+
 @Serializable
 data class Clip(
     val id: String,
@@ -358,6 +372,8 @@ data class Clip(
     val stab: Stabilization? = null,
     /** Transition into this clip from the clip that ends where this one starts (same track). */
     val transIn: Transition? = null,
+    /** In / Out / Combo animation of the whole layer. */
+    val anim: ClipAnim? = null,
 ) {
     val kind: ClipKind get() = when {
         text != null -> ClipKind.TEXT

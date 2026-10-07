@@ -39,6 +39,11 @@ import androidx.compose.material.icons.automirrored.outlined.Redo
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.AcUnit
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Compare
+import androidx.compose.material.icons.outlined.EmojiEmotions
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.outlined.Animation
 import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.AutoFixHigh
@@ -218,10 +223,13 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
                 PreviewPane(c, Modifier.weight(1f).fillMaxWidth())
                 PlaybackBar(c)
             }
-            Column(Modifier.weight(0.45f).fillMaxHeight()) {
-                if (!expanded) LayerFxStrip(c)
-                if (!expanded) TimelineView(c, Modifier.weight(1f).fillMaxWidth()) else Box(Modifier.weight(1f))
-                BottomArea(c)
+            Box(Modifier.weight(0.45f).fillMaxHeight()) {
+                Column(Modifier.fillMaxSize()) {
+                    if (!expanded) LayerFxStrip(c)
+                    if (!expanded) TimelineView(c, Modifier.weight(1f).fillMaxWidth()) else Box(Modifier.weight(1f))
+                    ContextToolbar(c)
+                }
+                ToolSheetHost(c, Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.92f))
             }
         }
     } else {
@@ -230,13 +238,25 @@ private fun EditorLayout(c: EditorController, onBack: () -> Unit) {
                 TopBar(c, onBack)
                 PreviewPane(c, Modifier.weight(1f).fillMaxWidth())
                 PlaybackBar(c)
-                if (!expanded) LayerFxStrip(c)
-                if (!expanded) TimelineResizeHandle(c)
-                if (!expanded) TimelineView(c, Modifier.fillMaxWidth().height(c.timelineHeightDp.dp))
-                BottomArea(c)
+                // The lower region (timeline + toolbar). Tool sheets slide up over it, so the
+                // preview keeps its size while a tool is open (like CapCut).
+                val sheetOpen = c.activeTool != null
+                val lowerDp = if (expanded) 76f else c.timelineHeightDp + 76f + 14f + (if (c.selectedClip()?.let { it.effects.isNotEmpty() || it.roto != null || it.stab != null || it.masks.isNotEmpty() } == true) 34f else 0f)
+                val regionDp by androidx.compose.animation.core.animateFloatAsState(
+                    if (sheetOpen) maxOf(lowerDp, 336f) else lowerDp, label = "region",
+                )
+                Box(Modifier.fillMaxWidth().height(regionDp.dp)) {
+                    Column(Modifier.fillMaxSize()) {
+                        if (!expanded) LayerFxStrip(c)
+                        if (!expanded) TimelineResizeHandle(c)
+                        if (!expanded) TimelineView(c, Modifier.fillMaxWidth().weight(1f)) else Spacer(Modifier.weight(1f))
+                        ContextToolbar(c)
+                    }
+                    ToolSheetHost(c, Modifier.align(Alignment.BottomCenter).fillMaxSize())
+                }
             }
             // A cat strolls along the bottom every minute (runs away when you touch the screen).
-            com.amiri.cut.ui.common.WalkingCat(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(40.dp), Color(0xFF5E5E68), LocalAccent.current)
+            if (c.activeTool == null) com.amiri.cut.ui.common.WalkingCat(Modifier.align(Alignment.BottomCenter).padding(bottom = 76.dp).fillMaxWidth().height(36.dp), Color(0xFF55555E), LocalAccent.current)
         }
     }
 }
@@ -252,7 +272,7 @@ private fun RoundIcon(icon: ImageVector, label: String, enabled: Boolean = true,
             .clickable(interactionSource = source, indication = null, enabled = enabled) { Haptics.select(view); onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, label, tint = if (enabled) tint else Amiri.TextTertiary.copy(alpha = 0.6f), modifier = Modifier.size((size * 0.58f).dp))
+        Icon(icon, label, tint = if (enabled) tint else Amiri.TextTertiary.copy(alpha = 0.55f), modifier = Modifier.size((size * 0.6f).dp))
     }
 }
 
@@ -265,11 +285,11 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
     var export by remember { mutableStateOf(false) }
     val accent = LocalAccent.current
     val view = LocalView.current
-    Row(Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        RoundIcon(Icons.Outlined.Close, "Save and close", onClick = onBack)
-        Box {
-            RoundIcon(Icons.Outlined.MoreHoriz, "Project menu") { menu = true }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Amiri.SurfaceHigh) {
+    Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 10.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        com.amiri.cut.ui.common.DiscButton(Icons.Outlined.Close, "Save and close", size = 38) { onBack() }
+        Box(Modifier.padding(start = 8.dp)) {
+            com.amiri.cut.ui.common.DiscButton(Icons.Outlined.MoreHoriz, "Project menu", size = 38) { menu = true }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Amiri.SurfaceHigh, shape = RoundedCornerShape(18.dp)) {
                 DropdownMenuItem(text = { Text("Rename project") }, leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) }, onClick = { menu = false; rename = true })
                 DropdownMenuItem(text = { Text("Save now") }, leadingIcon = { Icon(Icons.Outlined.Save, null) }, onClick = { menu = false; scope.launch { c.saveNow(); c.toast = Toast("Saved") } })
                 DropdownMenuItem(text = { Text("Media in this project") }, leadingIcon = { Icon(Icons.Outlined.PermMedia, null) }, onClick = { menu = false; c.activeTool = EditorTool.MEDIA })
@@ -287,24 +307,29 @@ private fun TopBar(c: EditorController, onBack: () -> Unit) {
                 CheckItem("Pro track headers", c.proTrackHeaders) { c.proTrackHeaders = !c.proTrackHeaders }
             }
         }
-        Text(
-            p.name, color = Amiri.TextSecondary, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).padding(horizontal = 6.dp).clickable { rename = true },
-        )
+        Column(Modifier.weight(1f).padding(horizontal = 10.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { rename = true }) {
+            Text(p.name, color = Amiri.TextPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "${p.settings.width}×${p.settings.height} · ${p.settings.fps} fps", color = Amiri.TextTertiary, fontSize = 11.sp,
+                style = MonoStyle, maxLines = 1,
+            )
+        }
         val shortSide = minOf(p.settings.width, p.settings.height)
         Row(
-            Modifier.clip(RoundedCornerShape(50)).background(Amiri.SurfaceHigh)
+            Modifier.height(36.dp).clip(RoundedCornerShape(50)).background(Amiri.SurfaceHigh).border(1.dp, Amiri.Line, RoundedCornerShape(50))
                 .clickable { Haptics.select(view); c.engine.pause(); export = true }
-                .padding(start = 12.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+                .padding(start = 12.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(if (shortSide >= 2160) "4K" else "${shortSide}P", color = Amiri.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(if (shortSide >= 2160) "4K" else "${shortSide}p", color = Amiri.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             Icon(Icons.Outlined.KeyboardArrowDown, null, tint = Amiri.TextSecondary, modifier = Modifier.size(18.dp))
         }
+        val src = remember { MutableInteractionSource() }
         Box(
-            Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50)).background(accent)
-                .clickable { Haptics.confirm(view); c.engine.pause(); export = true }
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            Modifier.padding(start = 8.dp).height(36.dp).pressScale(src, 0.94f).clip(RoundedCornerShape(50)).background(Amiri.accentBrush(accent))
+                .clickable(interactionSource = src, indication = null) { Haptics.confirm(view); c.engine.pause(); export = true }
+                .padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center,
         ) { Text("Export", color = onAccent(accent), fontSize = 14.sp, fontWeight = FontWeight.Bold) }
     }
     if (rename) {
@@ -318,7 +343,7 @@ private fun CheckItem(label: String, checked: Boolean, onClick: () -> Unit) {
     val accent = LocalAccent.current
     DropdownMenuItem(
         text = { Text(label) },
-        leadingIcon = { Icon(Icons.Outlined.Check, null, tint = if (checked) accent else Color.Transparent) },
+        leadingIcon = { Icon(Icons.Outlined.Check, null, tint = if (checked) Amiri.accentInk(accent) else Color.Transparent) },
         onClick = onClick,
     )
 }
@@ -332,20 +357,20 @@ private fun PlaybackBar(c: EditorController) {
     val playing by c.engine.playing.collectAsState()
     val accent = LocalAccent.current
     val view = LocalView.current
-    val fps = p.settings.fps
-    Box(Modifier.fillMaxWidth().height(50.dp).padding(horizontal = 12.dp)) {
+    Box(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 14.dp)) {
         Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.Bottom) {
             Text(FrameTime.shortClock(pos), color = Amiri.TextPrimary, style = MonoStyle, fontSize = 14.sp)
             Text(" / " + FrameTime.shortClock(p.durationUs), color = Amiri.TextTertiary, style = MonoStyle, fontSize = 12.sp)
         }
         Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically) {
             RoundIcon(Icons.Outlined.ChevronLeft, "Previous frame", size = 34, tint = Amiri.TextSecondary) { c.engine.stepFrames(-1); Haptics.tick(view) }
+            val src = remember { MutableInteractionSource() }
             Box(
-                Modifier.padding(horizontal = 4.dp).size(42.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.08f))
-                    .clickable { c.engine.togglePlay() },
+                Modifier.padding(horizontal = 6.dp).size(44.dp).pressScale(src, 0.88f).clip(CircleShape).background(Color.White)
+                    .clickable(interactionSource = src, indication = null) { c.engine.togglePlay() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "Pause" else "Play", tint = Color.Black, modifier = Modifier.size(28.dp))
             }
             RoundIcon(Icons.Outlined.ChevronRight, "Next frame", size = 34, tint = Amiri.TextSecondary) { c.engine.stepFrames(1); Haptics.tick(view) }
         }
@@ -360,7 +385,7 @@ private fun PlaybackBar(c: EditorController) {
                         rotate(45f) {
                             val s = size.minDimension * 0.72f
                             val o = Offset((size.width - s) / 2, (size.height - s) / 2)
-                            if (keyed) drawRect(accent, o, androidx.compose.ui.geometry.Size(s, s))
+                            if (keyed) drawRect(Amiri.accentInk(accent), o, androidx.compose.ui.geometry.Size(s, s))
                             else drawRect(Amiri.TextPrimary, o, androidx.compose.ui.geometry.Size(s, s), style = Stroke(2.2f))
                         }
                     }
@@ -375,7 +400,7 @@ private fun PlaybackBar(c: EditorController) {
 
 // ───────────────────────────── bottom toolbar & tool sheets ─────────────────────────────
 
-private data class ToolItem(val label: String, val icon: ImageVector, val enabled: Boolean = true, val danger: Boolean = false, val onClick: () -> Unit)
+private data class ToolItem(val label: String, val icon: ImageVector, val enabled: Boolean = true, val danger: Boolean = false, val accent: Boolean = false, val onClick: () -> Unit)
 
 private fun EditorTool.title(): String = when (this) {
     EditorTool.MEDIA -> "Media"
@@ -396,36 +421,39 @@ private fun EditorTool.title(): String = when (this) {
     EditorTool.STABILIZE -> "Stabilize"
     EditorTool.RATIO -> "Ratio"
     EditorTool.BACKGROUND -> "Background"
+    EditorTool.ANIMATION -> "Animation"
+    EditorTool.STICKERS -> "Stickers"
 }
 
+/** The open tool's sheet, sliding up over the timeline area. */
 @Composable
-private fun BottomArea(c: EditorController) {
-    val tool = c.activeTool
-    AnimatedContent(
-        targetState = tool,
-        transitionSpec = { (slideInVertically { it / 4 } + fadeIn()) togetherWith (slideOutVertically { it / 4 } + fadeOut()) },
-        label = "bottom",
-    ) { t ->
-        if (t != null) ToolSheet(c, t) else ContextToolbar(c)
+private fun ToolSheetHost(c: EditorController, modifier: Modifier) {
+    AnimatedVisibility(
+        visible = c.activeTool != null,
+        enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
+        modifier = modifier,
+    ) {
+        var last by remember { mutableStateOf(c.activeTool) }
+        c.activeTool?.let { last = it }
+        val t = last
+        if (t != null) ToolSheet(c, t)
     }
 }
 
 @Composable
 private fun ToolSheet(c: EditorController, tool: EditorTool) {
-    val accent = LocalAccent.current
-    val view = LocalView.current
+    val shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)).background(Amiri.Surface)
-            .border(1.dp, Amiri.Line, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)),
+        Modifier.fillMaxSize().clip(shape).background(Amiri.Surface)
+            .border(1.dp, Amiri.Line, shape)
+            // swallow touches so nothing under the sheet reacts
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
     ) {
-        Row(Modifier.fillMaxWidth().height(50.dp).padding(start = 18.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(tool.title(), color = Amiri.TextPrimary, style = MaterialTheme.typography.titleSmall, fontSize = 15.sp, modifier = Modifier.weight(1f))
-            Box(
-                Modifier.size(34.dp).clip(CircleShape).background(accent).clickable { Haptics.confirm(view); c.activeTool = null },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Outlined.Check, "Done", tint = onAccent(accent), modifier = Modifier.size(20.dp)) }
+        Box(Modifier.fillMaxWidth().padding(top = 6.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Amiri.SurfaceTop))
         }
-        ToolPanel(c, tool)
+        com.amiri.cut.ui.common.SheetHeader(tool.title()) { c.activeTool = null }
+        ToolPanel(c, tool, Modifier.weight(1f))
     }
 }
 
@@ -436,23 +464,38 @@ private fun ContextToolbar(c: EditorController) {
     val sel = c.selectedClip()
     val track = sel?.let { p.trackOfClip(it.id) }
     val asset = sel?.let { p.asset(it.assetId) }
+    val sticker = sel?.name?.startsWith("Sticker") == true
     val items: List<ToolItem> = when {
         sel == null -> listOf(
             ToolItem("Edit", Icons.Outlined.ContentCut) { c.selectMainAtPlayhead() },
             ToolItem("Audio", Icons.Outlined.MusicNote) { c.activeTool = EditorTool.AUDIO },
             ToolItem("Text", Icons.Outlined.TextFields) { c.activeTool = EditorTool.TEXT },
+            ToolItem("Stickers", Icons.Outlined.EmojiEmotions) { c.activeTool = EditorTool.STICKERS },
             ToolItem("Overlay", Icons.Outlined.PictureInPictureAlt) { c.openOverlayPicker() },
             ToolItem("Effects", Icons.Outlined.AutoFixHigh) { c.activeTool = EditorTool.EFFECTS },
             ToolItem("Filters", Icons.Outlined.FilterVintage) { c.activeTool = EditorTool.FILTERS },
             ToolItem("Adjust", Icons.Outlined.Tune) { c.activeTool = EditorTool.COLOR },
+            ToolItem("Animation", Icons.Outlined.Animation) { c.selectMainAtPlayhead(); c.activeTool = EditorTool.ANIMATION },
             ToolItem("Ratio", Icons.Outlined.AspectRatio) { c.activeTool = EditorTool.RATIO },
             ToolItem("Background", Icons.Outlined.Wallpaper) { c.activeTool = EditorTool.BACKGROUND },
             ToolItem("Shapes", Icons.Outlined.Category) { c.activeTool = EditorTool.SHAPE },
             ToolItem("Remove BG", Icons.Outlined.PersonOutline) { c.selectMainAtPlayhead(); c.activeTool = EditorTool.ROTO },
             ToolItem("Marker", Icons.Outlined.BookmarkAdd) { c.addMarker(); Haptics.tick(view); c.toast = Toast("Marker added") },
         )
+        sticker -> listOf(
+            ToolItem("Animation", Icons.Outlined.Animation) { c.activeTool = EditorTool.ANIMATION },
+            ToolItem("Stickers", Icons.Outlined.EmojiEmotions) { c.activeTool = EditorTool.STICKERS },
+            ToolItem("Transform", Icons.Outlined.CropRotate) { c.activeTool = EditorTool.TRANSFORM },
+            ToolItem("Split", Icons.Outlined.ContentCut) { c.split(); Haptics.confirm(view) },
+            ToolItem("Duplicate", Icons.Outlined.ContentCopy) { c.duplicateSelected() },
+            ToolItem("Keyframes", Icons.Outlined.Timeline) { c.activeTool = EditorTool.KEYS },
+            ToolItem("Track", Icons.Outlined.TrackChanges) { c.activeTool = EditorTool.TRACK },
+            lockItem(c, sel.locked),
+            ToolItem("Delete", Icons.Outlined.DeleteOutline, danger = true) { c.deleteSelected() },
+        )
         sel.kind == ClipKind.TEXT -> listOf(
             ToolItem("Edit", Icons.Outlined.TextFields) { c.activeTool = EditorTool.TEXT },
+            ToolItem("Animation", Icons.Outlined.Animation) { c.activeTool = EditorTool.ANIMATION },
             ToolItem("Split", Icons.Outlined.ContentCut) { c.split(); Haptics.confirm(view) },
             ToolItem("Duplicate", Icons.Outlined.ContentCopy) { c.duplicateSelected() },
             ToolItem("Transform", Icons.Outlined.CropRotate) { c.activeTool = EditorTool.TRANSFORM },
@@ -464,6 +507,7 @@ private fun ContextToolbar(c: EditorController) {
         )
         sel.kind == ClipKind.SHAPE -> listOf(
             ToolItem("Edit", Icons.Outlined.Category) { c.activeTool = EditorTool.SHAPE },
+            ToolItem("Animation", Icons.Outlined.Animation) { c.activeTool = EditorTool.ANIMATION },
             ToolItem("Split", Icons.Outlined.ContentCut) { c.split(); Haptics.confirm(view) },
             ToolItem("Duplicate", Icons.Outlined.ContentCopy) { c.duplicateSelected() },
             ToolItem("Transform", Icons.Outlined.CropRotate) { c.activeTool = EditorTool.TRANSFORM },
@@ -493,13 +537,15 @@ private fun ContextToolbar(c: EditorController) {
         else -> buildList {
             add(ToolItem("Split", Icons.Outlined.ContentCut) { c.split(); Haptics.confirm(view) })
             add(ToolItem("Speed", Icons.Outlined.Speed) { c.activeTool = EditorTool.SPEED })
+            add(ToolItem("Animation", Icons.Outlined.Animation) { c.activeTool = EditorTool.ANIMATION })
+            add(ToolItem("Enhance", Icons.Outlined.AutoAwesome, accent = true) { c.enhanceSelected(); Haptics.confirm(view) })
             if (asset?.hasAudio == true) add(ToolItem("Volume", Icons.AutoMirrored.Outlined.VolumeUp) { c.activeTool = EditorTool.AUDIO })
             add(ToolItem("Transform", Icons.Outlined.CropRotate) { c.activeTool = EditorTool.TRANSFORM })
             add(ToolItem("Remove BG", Icons.Outlined.PersonOutline) { c.activeTool = EditorTool.ROTO })
             add(ToolItem("Filters", Icons.Outlined.FilterVintage) { c.activeTool = EditorTool.FILTERS })
             add(ToolItem("Adjust", Icons.Outlined.Tune) { c.activeTool = EditorTool.COLOR })
             add(ToolItem("Effects", Icons.Outlined.AutoFixHigh) { c.activeTool = EditorTool.EFFECTS })
-            add(ToolItem("Transition", Icons.Outlined.Animation) { c.activeTool = EditorTool.TRANSITION })
+            add(ToolItem("Transition", Icons.Outlined.Compare) { c.activeTool = EditorTool.TRANSITION })
             add(ToolItem("Mask", Icons.Outlined.Layers) { c.activeTool = EditorTool.MASK })
             add(ToolItem("Keyframes", Icons.Outlined.Timeline) { c.activeTool = EditorTool.KEYS })
             add(ToolItem("Track", Icons.Outlined.TrackChanges) { c.activeTool = EditorTool.TRACK })
@@ -515,22 +561,32 @@ private fun ContextToolbar(c: EditorController) {
             add(ToolItem("Delete", Icons.Outlined.DeleteOutline, danger = true) { c.deleteSelected() })
         }
     }
-    Row(
-        Modifier.fillMaxWidth().height(76.dp).background(Amiri.Bg),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (sel != null) {
-            Box(
-                Modifier.padding(start = 6.dp).size(width = 44.dp, height = 56.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.SurfaceHigh)
-                    .clickable { Haptics.select(view); c.select(null) },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Outlined.ChevronLeft, "Back", tint = Amiri.TextPrimary) }
-        }
+    Column(Modifier.fillMaxWidth().background(Amiri.Bg)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Amiri.Line))
         Row(
-            Modifier.weight(1f).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+            Modifier.fillMaxWidth().height(75.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            items.forEach { t -> ToolButton(t) }
+            if (sel != null) {
+                Box(
+                    Modifier.padding(start = 8.dp, end = 2.dp).size(width = 40.dp, height = 54.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.SurfaceHigh)
+                        .clickable { Haptics.select(view); c.select(null) },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Outlined.ChevronLeft, "Back", tint = Amiri.TextPrimary) }
+            }
+            Box(Modifier.weight(1f)) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    items.forEach { t -> ToolButton(t) }
+                }
+                // fade hint that the row scrolls
+                Box(
+                    Modifier.align(Alignment.CenterEnd).width(28.dp).height(75.dp)
+                        .background(androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(Color.Transparent, Amiri.Bg))),
+                )
+            }
         }
     }
 }
@@ -541,18 +597,24 @@ private fun lockItem(c: EditorController, locked: Boolean) =
 @Composable
 private fun ToolButton(t: ToolItem) {
     val view = LocalView.current
+    val accent = LocalAccent.current
     val source = remember { MutableInteractionSource() }
+    val tint = when {
+        t.danger -> Amiri.Danger
+        t.accent -> Amiri.accentInk(accent)
+        else -> Amiri.TextPrimary
+    }
     Column(
-        Modifier.width(68.dp).pressScale(source, 0.9f)
+        Modifier.width(64.dp).pressScale(source, 0.88f)
             .clickable(interactionSource = source, indication = null, enabled = t.enabled) { Haptics.select(view); t.onClick() }
             .padding(vertical = 8.dp)
             .alpha(if (t.enabled) 1f else 0.4f),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(t.icon, t.label, tint = if (t.danger) Amiri.Danger else Amiri.TextPrimary, modifier = Modifier.size(24.dp))
+        Icon(t.icon, t.label, tint = tint, modifier = Modifier.size(24.dp))
         Text(
-            t.label, color = if (t.danger) Amiri.Danger else Amiri.TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Medium,
-            maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp),
+            t.label, color = if (t.danger) Amiri.Danger else if (t.accent) Amiri.accentInk(accent) else Amiri.TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 7.dp),
         )
     }
 }
@@ -566,11 +628,12 @@ private fun ToastHost(c: EditorController, modifier: Modifier) {
             if (c.toast == t) c.toast = null
         }
     }
-    AnimatedVisibility(visible = t != null, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
+    AnimatedVisibility(visible = t != null, enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut(), modifier = modifier) {
         Text(
             t?.text ?: "",
-            color = Color(0xFF0B0B0C), fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.94f)).padding(horizontal = 16.dp, vertical = 9.dp),
+            color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xF0232327))
+                .border(1.dp, Amiri.Line, RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 10.dp),
         )
     }
 }
@@ -589,7 +652,7 @@ private fun TimelineResizeHandle(c: EditorController) {
             },
         contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.size(width = 32.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Amiri.SurfaceHighest))
+        Box(Modifier.size(width = 30.dp, height = 3.dp).clip(RoundedCornerShape(2.dp)).background(Amiri.SurfaceTop))
     }
 }
 
@@ -602,33 +665,34 @@ private fun LayerFxStrip(c: EditorController) {
     val clip = c.selectedClip() ?: return
     val items = ArrayList<Triple<String, Boolean, String>>() // key, enabled, label
     clip.effects.forEach { e -> items += Triple("fx:" + e.id, e.enabled, com.amiri.cut.core.effects.EffectCatalog.spec(e.type)?.label ?: e.type) }
-    clip.roto?.takeIf { it.keys.isNotEmpty() }?.let { items += Triple("roto", it.enabled, "Roto") }
+    clip.roto?.takeIf { it.keys.isNotEmpty() }?.let { items += Triple("roto", it.enabled, "Cut-out") }
     clip.stab?.let { items += Triple("stab", it.enabled, "Stabilize") }
     if (clip.masks.isNotEmpty()) items += Triple("masks", true, "Masks ${clip.masks.size}")
     if (items.isEmpty()) return
     val accent = LocalAccent.current
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
+        Modifier.fillMaxWidth().height(34.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("FX", color = Amiri.TextTertiary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Icon(Icons.Outlined.AutoFixHigh, null, tint = Amiri.TextTertiary, modifier = Modifier.size(15.dp))
         items.forEach { (key, on, label) ->
             Row(
-                Modifier.clip(RoundedCornerShape(50)).background(if (on) accent.copy(alpha = 0.16f) else Amiri.SurfaceHigh)
+                Modifier.height(28.dp).clip(RoundedCornerShape(50)).background(if (on) Amiri.SurfaceHighest else Amiri.SurfaceHigh)
+                    .border(1.dp, if (on) Amiri.accentInk(accent).copy(alpha = 0.5f) else Amiri.Line, RoundedCornerShape(50))
                     .padding(start = 4.dp, end = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
-                    Modifier.size(26.dp).clickable { c.toggleLayerItem(clip.id, key) }.padding(8.dp)
-                        .clip(CircleShape).background(if (on) accent else Amiri.TextTertiary.copy(alpha = 0.4f)),
+                    Modifier.size(24.dp).clickable { c.toggleLayerItem(clip.id, key) }.padding(7.dp)
+                        .clip(CircleShape).background(if (on) Amiri.accentInk(accent) else Amiri.TextTertiary.copy(alpha = 0.45f)),
                 )
                 Text(
                     label, color = if (on) Amiri.TextPrimary else Amiri.TextTertiary, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                    modifier = Modifier.clickable { c.openLayerItem(clip.id, key) }.padding(horizontal = 4.dp, vertical = 6.dp),
+                    modifier = Modifier.clickable { c.openLayerItem(clip.id, key) }.padding(horizontal = 4.dp, vertical = 5.dp),
                 )
                 if (key != "masks") Icon(
                     Icons.Outlined.Close, "Delete $label", tint = Amiri.TextSecondary,
-                    modifier = Modifier.size(26.dp).clickable { c.deleteLayerItem(clip.id, key) }.padding(6.dp),
+                    modifier = Modifier.size(24.dp).clickable { c.deleteLayerItem(clip.id, key) }.padding(6.dp),
                 )
             }
         }
@@ -663,10 +727,10 @@ private fun AttachSheet(c: EditorController, trackedClipId: String) {
 @Composable
 private fun AttachChoice(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
     Column(
-        modifier.clip(RoundedCornerShape(16.dp)).background(Amiri.SurfaceHigh).clickable(onClick = onClick).padding(vertical = 18.dp),
+        modifier.clip(RoundedCornerShape(18.dp)).background(Amiri.SurfaceHigh).border(1.dp, Amiri.Line, RoundedCornerShape(18.dp)).clickable(onClick = onClick).padding(vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, label, tint = LocalAccent.current, modifier = Modifier.size(28.dp))
+        Icon(icon, label, tint = Amiri.accentInk(LocalAccent.current), modifier = Modifier.size(28.dp))
         Text(label, color = Amiri.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 6.dp))
     }
 }
