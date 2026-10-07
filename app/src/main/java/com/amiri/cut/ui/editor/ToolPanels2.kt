@@ -700,7 +700,7 @@ internal fun TextPanel(c: EditorController) {
     }
 }
 
-/** Filters: cinematic looks shown on the cat photo; for one clip or the whole video. */
+/** Filters: cinematic looks previewed on your own clip's frame; for one clip or the whole video. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 internal fun FiltersPanel(c: EditorController) {
@@ -709,6 +709,9 @@ internal fun FiltersPanel(c: EditorController) {
     val target = remember(c.project, pos, c.selectedClipId, whole) { if (whole) c.wholeVideoFilter() else c.filterTarget() }
     val fx = target?.effects?.firstOrNull { it.type == "color" }
     val cur = fx?.opts?.get("look")
+    // Preview frame: the clip being filtered (or the one under the playhead).
+    val src = remember(c.selectedClipId, whole, target?.id) { c.filterTarget() }
+    val (base, bk) = rememberLookBase(c, src)
     Column {
         ChoiceChips(listOf(false, true), whole, { if (it) "Whole video" else "This clip" }) { whole = it }
         Text(
@@ -722,34 +725,72 @@ internal fun FiltersPanel(c: EditorController) {
             Modifier.fillMaxWidth().padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            LookCard(null, cur == null) { c.applyFilter(null, whole) }
-            com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) -> LookCard(name, cur == name) { c.applyFilter(name, whole) } }
+            LookCard(null, cur == null, base, bk) { c.applyFilter(null, whole) }
+            com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) -> LookCard(name, cur == name, base, bk) { c.applyFilter(name, whole) } }
         }
         Hint("Fine-tune any filter in Color (Basic, Wheels, HSL, Curves) — the filter stays on top of your own grade.")
     }
 }
 
-/** The bundled cat photo used to preview looks (loaded once). */
+/**
+ * The picture looks are previewed on: a frame of [clip] at the playhead, grabbed once per clip
+ * (key = asset@clip). Until it is ready, or if it can't be read, the bundled cat photo ("cat").
+ */
+@Composable
+private fun rememberLookBase(c: EditorController, clip: com.amiri.cut.core.model.Clip?): Pair<android.graphics.Bitmap?, String> {
+    val ctx = LocalContext.current
+    val asset = clip?.let { c.project?.asset(it.assetId) }
+    val frameKey = if (clip != null && asset != null) asset.id + "@" + clip.id else null
+    val loaded by androidx.compose.runtime.produceState<Pair<String, android.graphics.Bitmap>?>(null, frameKey) {
+        if (frameKey == null || clip == null || asset == null) return@produceState
+        val pos = c.engine.position.value
+        val at = clip.sourceTimeAt(pos.coerceIn(clip.startUs, (clip.endUs - 1).coerceAtLeast(clip.startUs)))
+        val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { LookPreview.frame(ctx, asset, at) }
+        if (b != null) value = frameKey to b
+    }
+    val key = loaded?.first?.takeIf { it == frameKey } ?: "cat"
+    return (if (key == "cat") null else loaded?.second) to key
+}
+
+/** Preview pictures for looks: a small frame of your clip, or the bundled cat photo. */
 private object LookPreview {
     @Volatile var cat: android.graphics.Bitmap? = null
-    val cache = java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+    /** (frame key | look) → tinted preview; bounded so long sessions don't grow it forever. */
+    val cache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(160)
     fun base(ctx: android.content.Context): android.graphics.Bitmap? = cat ?: runCatching {
         ctx.assets.open("preview/cat.jpg").use { android.graphics.BitmapFactory.decodeStream(it) }
     }.getOrNull()?.let { b -> android.graphics.Bitmap.createScaledBitmap(b, 120, 128, true).also { cat = it } }
+
+    /** A ~128-px centre crop of the clip's picture at [sourceUs] (null if it can't be read). */
+    fun frame(ctx: android.content.Context, a: com.amiri.cut.core.model.MediaAsset, sourceUs: Long): android.graphics.Bitmap? = runCatching {
+        val raw = when (a.type) {
+            com.amiri.cut.core.model.MediaType.VIDEO -> com.amiri.cut.media.BitmapLoader.videoFrame(ctx, a, sourceUs, 256)
+            com.amiri.cut.core.model.MediaType.IMAGE -> com.amiri.cut.media.BitmapLoader.decodeImage(ctx, a, 256)
+            else -> null
+        } ?: return@runCatching null
+        // Same 120×128 shape as the tiles: scale to cover, then centre-crop.
+        val k = maxOf(120f / raw.width, 128f / raw.height)
+        val sw = (raw.width * k).toInt().coerceAtLeast(120)
+        val sh = (raw.height * k).toInt().coerceAtLeast(128)
+        val scaled = android.graphics.Bitmap.createScaledBitmap(raw, sw, sh, true)
+        android.graphics.Bitmap.createBitmap(scaled, (sw - 120) / 2, (sh - 128) / 2, 120, 128)
+    }.getOrNull()
 }
 
-/** A look shown on the cat photo, so you see the colors before choosing it. */
+/** A look applied to the preview picture, so you see the colours before choosing it. */
 @Composable
-private fun LookCard(name: String?, selected: Boolean, onClick: () -> Unit) {
+private fun LookCard(name: String?, selected: Boolean, base: android.graphics.Bitmap?, baseKey: String, onClick: () -> Unit) {
     val ctx = LocalContext.current
     val accent = LocalAccent.current
-    val key = name ?: "None"
-    val img by androidx.compose.runtime.produceState(LookPreview.cache[key], key) {
-        if (value == null) value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            val b = LookPreview.base(ctx) ?: return@withContext null
+    val key = baseKey + "|" + (name ?: "None")
+    val img by androidx.compose.runtime.produceState(LookPreview.cache.get(key), key) {
+        LookPreview.cache.get(key)?.let { value = it; return@produceState }
+        val made = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val b = base ?: LookPreview.base(ctx) ?: return@withContext null
             val out = if (name == null) b else com.amiri.cut.render.ColorMath.apply(b, com.amiri.cut.render.ColorMath.lookParams(name))
-            out.asImageBitmap().also { LookPreview.cache[key] = it }
+            out.asImageBitmap()
         }
+        if (made != null) { LookPreview.cache.put(key, made); value = made }
     }
     Column(Modifier.width(76.dp).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
@@ -941,14 +982,15 @@ internal fun ColorPanel(c: EditorController) {
                 val id = fx0?.id ?: c.ensureColorEffect() ?: return
                 c.updateEffect(id, "Look: ${name ?: "none"}") { if (name == null) it.copy(opts = it.opts - "look") else it.copy(opts = it.opts + ("look" to name)) }
             }
+            val (lb, lk) = rememberLookBase(c, clip)
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                LookCard(null, cur == null) { pick(null) }
-                com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) -> LookCard(name, cur == name) { pick(name) } }
+                LookCard(null, cur == null, lb, lk) { pick(null) }
+                com.amiri.cut.core.effects.ColorLooks.LOOKS.forEach { (name, _) -> LookCard(name, cur == name, lb, lk) { pick(name) } }
             }
             if (cur != null && fx0 != null) {
                 ParamRow(c, EditorController.PTarget.Fx(clip.id, fx0.id), EffectCatalog.COLOR.param("lookAmt")!!)
                 Hint("“$cur” is added on top of your own adjustments — fine-tune it in Basic, Wheels and HSL. Intensity can be keyframed.")
-            } else Hint("${com.amiri.cut.core.effects.ColorLooks.LOOKS.size} cinematic looks, previewed on the cat 🐾. Tap one, then set its intensity.")
+            } else Hint("${com.amiri.cut.core.effects.ColorLooks.LOOKS.size} cinematic looks, previewed on your clip. Tap one, then set its intensity.")
             return@Column
         }
         val fx = clip.effects.firstOrNull { it.type == "color" }

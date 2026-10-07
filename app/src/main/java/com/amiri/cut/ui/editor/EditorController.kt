@@ -1803,7 +1803,10 @@ class EditorController(
 
     // ═════════════════════════ Stickers ═════════════════════════
 
-    /** Adds an emoji sticker (a text layer) at the playhead with a pop-in entrance. */
+    /**
+     * Adds an emoji sticker (a text layer) at the playhead. It starts static so it is visible
+     * right where it was added; motion comes from the sticker bar or the Animation tool.
+     */
     fun addEmojiSticker(emoji: String) {
         val p = project ?: return
         engine.pause()
@@ -1811,7 +1814,6 @@ class EditorController(
         val spec = com.amiri.cut.core.model.TextSpec(
             text = emoji,
             props = com.amiri.cut.core.model.Props.of("size" to 0.17f),
-            animIn = "pop", inDur = 0.45f,
         )
         val withSpec = TimelineOps.updateClip(np, clip.id) { it.copy(text = spec, name = "Sticker $emoji") } ?: np
         commit("Add sticker", withSpec)
@@ -1838,8 +1840,8 @@ class EditorController(
             } ?: run { toast = Toast("Couldn't create the sticker"); return@launch }
             val cur = project ?: p0
             val r = TimelineOps.placeOverlay(cur, asset, at, 3_000_000L, 0.38f) ?: TimelineOps.placeAsset(cur, asset, at)
-            val withAnim = TimelineOps.updateClip(r.first, r.second.id) { it.copy(anim = com.amiri.cut.core.model.ClipAnim(inId = "pop", inDur = 0.45f), name = asset.name) } ?: r.first
-            commit("Add sticker", withAnim)
+            val named = TimelineOps.updateClip(r.first, r.second.id) { it.copy(name = asset.name) } ?: r.first
+            commit("Add sticker", named)
             selectedClipId = r.second.id
             requestCaches(asset)
         }
@@ -2031,8 +2033,8 @@ class EditorController(
     var viewZoom by mutableFloatStateOf(1f)
     var viewPanX by mutableFloatStateOf(0f)
     var viewPanY by mutableFloatStateOf(0f)
-    /** Timeline height in dp (compact by default — about two rows; drag the handle to resize). */
-    var timelineHeightDp by mutableFloatStateOf(app.getSharedPreferences("amiri_settings", android.content.Context.MODE_PRIVATE).getFloat("timelineH", 150f))
+    /** Timeline height in dp (room for the main track plus a few lanes; drag the handle to resize). */
+    var timelineHeightDp by mutableFloatStateOf(app.getSharedPreferences("amiri_settings", android.content.Context.MODE_PRIVATE).getFloat("timelineH", 196f))
     fun saveTimelineHeight() { app.getSharedPreferences("amiri_settings", android.content.Context.MODE_PRIVATE).edit().putFloat("timelineH", timelineHeightDp).apply() }
 
     /** Hide the timeline to give the preview the whole screen (auto on in Roto). */

@@ -135,8 +135,14 @@ private fun DurationRow(label: String, value: Float, max: Float, onChange: (Floa
 @Composable
 private fun AnimTile(spec: ClipAnimSpec?, label: String, tab: String, selected: Boolean, onClick: () -> Unit) {
     val accent = LocalAccent.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // With system animations switched off the loop can't run: show the resting frame instead.
+    val motionOff = remember {
+        runCatching { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
+    }
     val inf = rememberInfiniteTransition(label = "anim")
-    val t by inf.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "t")
+    val tLoop by inf.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "t")
+    val t = if (motionOff) (if (tab == "Out") 0.2f else 0.75f) else tLoop
     val xf = remember { com.amiri.cut.core.anim.ClipXf() }
     if (spec != null) {
         val durUs = 1_800_000L
@@ -154,6 +160,10 @@ private fun AnimTile(spec: ClipAnimSpec?, label: String, tab: String, selected: 
                 .border(if (selected) 2.dp else 1.dp, if (selected) Amiri.accentInk(accent) else Amiri.Line, RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center,
         ) {
+            // Faint outline of the resting frame, so the motion reads against it (and the tile is never empty).
+            if (spec != null) Box(
+                Modifier.size(34.dp).border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(6.dp)),
+            )
             if (spec == null) Icon(Icons.Outlined.Block, null, tint = Amiri.TextSecondary, modifier = Modifier.size(24.dp))
             else Canvas(
                 Modifier.size(34.dp).graphicsLayer {
