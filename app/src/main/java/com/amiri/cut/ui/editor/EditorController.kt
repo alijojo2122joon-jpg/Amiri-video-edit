@@ -19,6 +19,7 @@ import com.amiri.cut.engine.PreviewEngine
 import com.amiri.cut.media.BitmapLoader
 import com.amiri.cut.media.MediaProbe
 import kotlinx.coroutines.CoroutineScope
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +40,10 @@ import com.amiri.cut.media.RotoBrushMode
 import com.amiri.cut.media.RotoPainter
 import com.amiri.cut.media.RotoPropagator
 
-enum class Placement { APPEND_TO_MAIN, AT_PLAYHEAD, BIN_ONLY }
+enum class Placement { APPEND_TO_MAIN, AT_PLAYHEAD, OVERLAY, BIN_ONLY }
+
+/** One-tap flows from the Home screen: import, then jump straight into a tool. */
+enum class QuickStart { REMOVE_BG, SMART_ROTO, CLEAN_VOICE, STABILIZE, BEAT_SYNC }
 
 enum class EditorTool(val label: String, val stage: Int) {
     MEDIA("Media", 1),
@@ -58,6 +62,8 @@ enum class EditorTool(val label: String, val stage: Int) {
     COLOR("Color", 6),
     EFFECTS("Effects", 7),
     AUDIO("Audio", 10),
+    RATIO("Ratio", 1),
+    BACKGROUND("Background", 1),
     ;
     /** Every tool is implemented. */
     val available: Boolean get() = true
@@ -276,37 +282,68 @@ class EditorController(
 
     fun importUris(uris: List<Uri>, placement: Placement) {
         if (uris.isEmpty()) return
+        scope.launch { importNow(uris, placement) }
+    }
+
+    /** Imports and places media; returns the assets that could be read. */
+    suspend fun importNow(uris: List<Uri>, placement: Placement): List<MediaAsset> {
+        if (uris.isEmpty()) return emptyList()
         importing += uris.size
-        scope.launch {
-            val assets = ArrayList<MediaAsset>()
-            var failed = 0
-            for (u in uris) {
-                MediaProbe.persistPermission(app.contentResolver, u)
-                val a = MediaProbe.probe(app, u)
-                if (a == null) failed++ else assets += a
-                importing--
-            }
-            val base = project ?: return@launch
-            var p = base
-            var cursor = engine.position.value
-            for (a in assets) {
-                p = when (placement) {
-                    Placement.APPEND_TO_MAIN -> TimelineOps.appendToMain(p, a).first
-                    Placement.AT_PLAYHEAD -> {
-                        val (np, clip) = TimelineOps.placeAsset(p, a, cursor)
-                        cursor = clip.endUs
-                        np
-                    }
-                    Placement.BIN_ONLY -> TimelineOps.addAsset(p, a)
+        val assets = ArrayList<MediaAsset>()
+        var failed = 0
+        for (u in uris) {
+            MediaProbe.persistPermission(app.contentResolver, u)
+            val a = MediaProbe.probe(app, u)
+            if (a == null) failed++ else assets += a
+            importing--
+        }
+        val base = project ?: return assets
+        var p = base
+        var cursor = engine.position.value
+        var lastClip: String? = null
+        for (a in assets) {
+            p = when (placement) {
+                Placement.APPEND_TO_MAIN -> TimelineOps.appendToMain(p, a).let { (np, cl) -> lastClip = cl.id; np }
+                Placement.AT_PLAYHEAD -> {
+                    val (np, clip) = TimelineOps.placeAsset(p, a, cursor)
+                    cursor = clip.endUs
+                    lastClip = clip.id
+                    np
                 }
-                requestCaches(a)
+                Placement.OVERLAY -> {
+                    val r = if (a.type == MediaType.AUDIO) TimelineOps.placeAsset(p, a, cursor)
+                    else TimelineOps.placeOverlay(p, a, cursor, if (a.isStill) 3_000_000L else 3_600_000_000L, 0.55f) ?: TimelineOps.placeAsset(p, a, cursor)
+                    lastClip = r.second.id
+                    r.first
+                }
+                Placement.BIN_ONLY -> TimelineOps.addAsset(p, a)
             }
-            if (assets.isNotEmpty()) commit(if (assets.size == 1) "Import ${assets[0].name}" else "Import ${assets.size} files", p)
-            toast = when {
-                failed > 0 && assets.isEmpty() -> Toast("Couldn't read the selected file(s)")
-                failed > 0 -> Toast("Imported ${assets.size}, skipped $failed unreadable")
-                else -> Toast(if (assets.size == 1) "Imported 1 file" else "Imported ${assets.size} files")
-            }
+            requestCaches(a)
+        }
+        if (assets.isNotEmpty()) commit(if (assets.size == 1) "Import ${assets[0].name}" else "Import ${assets.size} files", p)
+        if (placement == Placement.OVERLAY && lastClip != null) selectedClipId = lastClip
+        toast = when {
+            failed > 0 && assets.isEmpty() -> Toast("Couldn't read the selected file(s)")
+            failed > 0 -> Toast("Imported ${assets.size}, skipped $failed unreadable")
+            else -> Toast(if (assets.size == 1) "Added 1 item" else "Added ${assets.size} items")
+        }
+        return assets
+    }
+
+    /** Runs a Home-screen quick tool on the first clip of the project. */
+    fun runQuickStart(q: QuickStart) {
+        val p = project ?: return
+        val first = p.tracks.filter { it.kind == TrackKind.VIDEO }.asReversed().firstNotNullOfOrNull { t -> t.clips.firstOrNull() }
+            ?: p.tracks.firstNotNullOfOrNull { t -> t.clips.firstOrNull() } ?: return
+        select(first.id)
+        engine.pause()
+        engine.seekTo(first.startUs + minOf(first.durationUs / 3, 1_000_000L))
+        when (q) {
+            QuickStart.REMOVE_BG -> { activeTool = EditorTool.ROTO; autoCutout() }
+            QuickStart.SMART_ROTO -> { rotoMode = RotoBrushMode.SMART; activeTool = EditorTool.ROTO; toast = Toast("Scribble on the subject — it snaps to the edges") }
+            QuickStart.CLEAN_VOICE -> { activeTool = EditorTool.AUDIO; isolateVoice(1f, false) }
+            QuickStart.STABILIZE -> { activeTool = EditorTool.STABILIZE; stabilize(com.amiri.cut.core.model.StabMode.ADVANCED, 0.6f, 0f) }
+            QuickStart.BEAT_SYNC -> { activeTool = EditorTool.AUDIO; toast = Toast("Add music, then tap Find beats") }
         }
     }
 
@@ -458,6 +495,131 @@ class EditorController(
             commit("Remove track", np)
             toast = Toast("Track removed · Undo to bring it back")
         }
+    }
+
+    // ───────────────────────── redesign: gallery picker, ratio, background ─────────────────────────
+
+    /** An open in-editor gallery request and what to do with the result. */
+    data class EditorPick(
+        val request: com.amiri.cut.ui.picker.PickRequest,
+        val placement: Placement? = null,
+        val replaceAssetId: String? = null,
+        val attachTo: String? = null,
+        val sound: Boolean = false,
+    )
+
+    var picker by mutableStateOf<EditorPick?>(null)
+    var trackMenuFor by mutableStateOf<String?>(null)
+    var proTrackHeaders by mutableStateOf(false)
+    var openExport by mutableStateOf(false)
+
+    private val visualKinds = setOf(com.amiri.cut.ui.picker.GalleryItem.Kind.VIDEO, com.amiri.cut.ui.picker.GalleryItem.Kind.IMAGE)
+
+    fun openAddMedia(placement: Placement = Placement.APPEND_TO_MAIN) {
+        engine.pause()
+        picker = EditorPick(com.amiri.cut.ui.picker.PickRequest(visualKinds, multiple = true, confirm = "Add"), placement)
+    }
+
+    fun openOverlayPicker() {
+        engine.pause()
+        picker = EditorPick(com.amiri.cut.ui.picker.PickRequest(visualKinds, multiple = true, confirm = "Add overlay"), Placement.OVERLAY)
+    }
+
+    fun openMusicPicker() {
+        engine.pause()
+        picker = EditorPick(
+            com.amiri.cut.ui.picker.PickRequest(setOf(com.amiri.cut.ui.picker.GalleryItem.Kind.AUDIO), multiple = false, confirm = "Use", title = "Music & audio"),
+            sound = true,
+        )
+    }
+
+    fun openReplacePicker() {
+        val sel = selectedClip() ?: return
+        val a = project?.asset(sel.assetId) ?: return
+        engine.pause()
+        val kinds = if (a.type == MediaType.AUDIO) setOf(com.amiri.cut.ui.picker.GalleryItem.Kind.AUDIO) else visualKinds
+        picker = EditorPick(com.amiri.cut.ui.picker.PickRequest(kinds, multiple = false, confirm = "Replace", title = "Replace “${sel.name}”"), replaceAssetId = a.id)
+    }
+
+    fun openAttachPicker(trackedClipId: String) {
+        picker = EditorPick(com.amiri.cut.ui.picker.PickRequest(visualKinds, multiple = false, confirm = "Attach"), attachTo = trackedClipId)
+    }
+
+    fun onPicked(pick: EditorPick, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        when {
+            pick.replaceAssetId != null -> replaceMedia(pick.replaceAssetId, uris.first())
+            pick.attachTo != null -> attachOverlayFromUri(pick.attachTo, uris.first())
+            pick.sound -> importSound(uris.first(), "Music")
+            else -> importUris(uris, pick.placement ?: Placement.APPEND_TO_MAIN)
+        }
+    }
+
+    /** "Edit" with nothing selected: pick the picture under the playhead (CapCut behaviour). */
+    fun selectMainAtPlayhead() {
+        val p = project ?: return
+        val pos = engine.position.value
+        val hit = TimelineOps.topVisualClipAt(p, pos)?.second
+            ?: p.tracks.filter { it.kind == TrackKind.VIDEO }.asReversed().firstNotNullOfOrNull { t -> t.clips.minByOrNull { kotlin.math.abs(it.startUs - pos) } }
+        if (hit == null) { toast = Toast("Add a video or photo first"); openAddMedia(); return }
+        select(hit.id)
+    }
+
+    /** Changes the canvas shape, keeping the resolution class (short side). */
+    fun setRatio(aw: Int, ah: Int, label: String) {
+        val p = project ?: return
+        val short = minOf(p.settings.width, p.settings.height)
+        val (w, h) = com.amiri.cut.ui.newproject.frameSize(short, aw, ah)
+        if (w == p.settings.width && h == p.settings.height) return
+        commit("Ratio $label", p.copy(settings = p.settings.copy(width = w, height = h, aspectLabel = label)))
+        engine.refreshFrame()
+    }
+
+    /** Original ratio = the first picture's own shape. */
+    fun setRatioOriginal() {
+        val p = project ?: return
+        val a = p.tracks.filter { it.kind == TrackKind.VIDEO }.asReversed().flatMap { it.clips }.firstNotNullOfOrNull { cl -> p.asset(cl.assetId)?.takeIf { it.type != MediaType.AUDIO } }
+            ?: run { toast = Toast("Add a video or photo first"); return }
+        val s = com.amiri.cut.ui.newproject.AutoProject.settingsFor(a.displayWidth, a.displayHeight)
+        val short = minOf(p.settings.width, p.settings.height)
+        val scale = short.toFloat() / minOf(s.width, s.height)
+        fun even(v: Float) = ((v / 2f).roundToInt() * 2).coerceAtLeast(2)
+        commit("Ratio Original", p.copy(settings = p.settings.copy(width = even(s.width * scale), height = even(s.height * scale), aspectLabel = "Original")))
+        engine.refreshFrame()
+    }
+
+    fun setFill(label: String, live: Boolean = false, f: (com.amiri.cut.core.model.CanvasFill) -> com.amiri.cut.core.model.CanvasFill) {
+        val p = project ?: return
+        val np = p.copy(settings = p.settings.copy(fill = f(p.settings.fill)))
+        if (live) { beginEdit(); liveEdit(np) } else commit(label, np)
+        engine.refreshFrame()
+    }
+
+    /** CI screenshot harness: fills the demo project and puts the editor in the requested state. */
+    suspend fun runDemo(plan: com.amiri.cut.export.UiDemo.Plan) {
+        val png = plan.extras.filter { it.path?.endsWith(".png") == true }
+        val wav = plan.extras.filter { it.path?.endsWith(".wav") == true }
+        if (png.isNotEmpty()) { engine.seekTo(1_200_000L); importNow(png, Placement.OVERLAY) }
+        if (wav.isNotEmpty()) { engine.seekTo(0L); importNow(wav, Placement.AT_PLAYHEAD) }
+        engine.seekTo(400_000L)
+        addText("Weekend vibes")
+        val p = project ?: return
+        val main = p.tracks.filter { it.kind == TrackKind.VIDEO }.asReversed().firstNotNullOfOrNull { t -> t.clips.firstOrNull() }
+        if (main != null) {
+            p.tracks.firstNotNullOfOrNull { t -> t.clips.getOrNull(1)?.takeIf { t.kind == TrackKind.VIDEO } }?.let {
+                setTransition(it.id, com.amiri.cut.core.model.Transition("whip", 600_000L))
+            }
+            select(main.id)
+            engine.seekTo(main.startUs + 1_300_000L)
+        }
+        val screen = plan.screen
+        when {
+            screen == "editor" -> select(null)
+            screen.startsWith("editor:") -> runCatching { activeTool = EditorTool.valueOf(screen.substringAfter(':')) }
+            screen == "export" -> openExport = true
+        }
+        pps = 70f
+        toast = null
     }
 
     fun rename(name: String) {

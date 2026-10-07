@@ -33,13 +33,12 @@ fun Modifier.glass(
     rim: Dp = 1.dp,
 ): Modifier = this
     .clip(shape)
-    .background(Color(0xCC121215), shape)
+    .background(Color(0xF2161618), shape)
     .background(
         Brush.verticalGradient(
             listOf(
-                Color.White.copy(alpha = 0.085f * strength),
-                Color.White.copy(alpha = 0.025f * strength),
-                Color.White.copy(alpha = 0.04f * strength),
+                Color.White.copy(alpha = 0.055f * strength),
+                Color.White.copy(alpha = 0.012f * strength),
             )
         ),
         shape,
@@ -48,26 +47,23 @@ fun Modifier.glass(
         rim,
         Brush.verticalGradient(
             listOf(
-                Color.White.copy(alpha = 0.22f * strength),
-                Color.White.copy(alpha = 0.05f * strength),
-                Color.White.copy(alpha = 0.10f * strength),
+                Color.White.copy(alpha = 0.13f * strength),
+                Color.White.copy(alpha = 0.04f * strength),
             )
         ),
         shape,
     )
 
-/** Accent-tinted glass for primary actions. */
+/** Accent-tinted surface for selected / primary-but-quiet elements. */
 fun Modifier.glassAccent(accent: Color, shape: Shape = RoundedCornerShape(20.dp)): Modifier = this
     .clip(shape)
-    .background(
-        Brush.verticalGradient(listOf(accent.copy(alpha = 0.30f), accent.copy(alpha = 0.16f))),
-        shape,
-    )
-    .border(
-        1.dp,
-        Brush.verticalGradient(listOf(accent.copy(alpha = 0.65f), accent.copy(alpha = 0.18f))),
-        shape,
-    )
+    .background(accent.copy(alpha = 0.17f), shape)
+    .border(1.dp, accent.copy(alpha = 0.55f), shape)
+
+/** Solid card surface (no translucency) used by lists and sheets. */
+fun Modifier.card(shape: Shape = RoundedCornerShape(18.dp), color: Color = Amiri.SurfaceHigh): Modifier = this
+    .clip(shape)
+    .background(color, shape)
 
 /** Micro-interaction: gentle spring scale while pressed. */
 fun Modifier.pressScale(source: MutableInteractionSource, pressed: Float = 0.96f): Modifier = composed {

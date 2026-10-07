@@ -108,6 +108,10 @@ jobs:
         with:
           name: AmiriCut-release-apk
           path: apk
+      - name: Generate demo media for UI screenshots
+        run: |
+          pip install --quiet imageio-ffmpeg pillow numpy
+          python3 .github/scripts/make_demo_media.py demo-media
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -118,9 +122,46 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis
+          profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash .github/scripts/smoke.sh
+      - name: Attach UI screenshots to the release
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls ui-shots/*.png >/dev/null 2>&1 || { echo "::warning::no UI screenshots"; exit 0; }
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          import glob, os
+          files = sorted(glob.glob("ui-shots/*.png"))
+          ims = []
+          for f in files:
+              try:
+                  im = Image.open(f).convert("RGB")
+              except Exception:
+                  continue
+              im = im.resize((360, int(im.height * 360 / im.width)))
+              ims.append((os.path.basename(f)[:-4], im))
+          cols = 5
+          h = max(i.height for _, i in ims) + 30
+          sheet = Image.new("RGB", (cols * 370, ((len(ims) + cols - 1) // cols) * h), (24, 24, 28))
+          d = ImageDraw.Draw(sheet)
+          for k, (n, im) in enumerate(ims):
+              x, y = (k % cols) * 370, (k // cols) * h
+              sheet.paste(im, (x, y + 26)); d.text((x + 6, y + 6), n, fill=(230, 230, 230))
+          sheet.save("ui-shots.png")
+          PY
+          zip -qj ui-shots.zip ui-shots/*.png
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          TAG="v${VERSION}-build${{ github.run_number }}"
+          gh release upload "$TAG" ui-shots.png ui-shots.zip --clobber || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-shots
+          path: ui-shots/
       - name: Attach preview frames of the self-test export to the release
         if: always() && github.event_name != 'pull_request'
         env:

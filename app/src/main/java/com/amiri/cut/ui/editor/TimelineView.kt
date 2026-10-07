@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -22,14 +21,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.VolumeOff
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.automirrored.outlined.VolumeOff
-import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -49,12 +48,18 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.VectorPainter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -63,7 +68,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,13 +77,15 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amiri.cut.core.model.Clip
+import com.amiri.cut.core.model.ClipKind
 import com.amiri.cut.core.model.Project
 import com.amiri.cut.core.model.Track
 import com.amiri.cut.core.model.TrackKind
 import com.amiri.cut.core.time.FrameTime
 import com.amiri.cut.core.timeline.TimelineOps
-import com.amiri.cut.ui.theme.Amiri
 import com.amiri.cut.ui.common.paw
+import com.amiri.cut.ui.theme.Amiri
+import com.amiri.cut.ui.theme.AmiriFont
 import com.amiri.cut.ui.theme.Haptics
 import com.amiri.cut.ui.theme.LocalAccent
 import kotlinx.coroutines.Job
@@ -107,6 +113,10 @@ private sealed interface DragOp {
 private sealed interface Hit {
     data object Ruler : Hit
     data object Empty : Hit
+    data object AddMedia : Hit
+    data object AddAudio : Hit
+    data object MuteMain : Hit
+    data class TransBtn(val clipId: String) : Hit
     data class ClipHit(val track: Track, val clip: Clip) : Hit
     data class Handle(val clip: Clip, val start: Boolean) : Hit
     data class KeyHit(val clip: Clip, val t: Long) : Hit
@@ -127,14 +137,27 @@ private class TimelineGeometry {
     var scrollY: Float = 0f
     var rulerH: Float = 0f
     var handleW: Float = 0f
+    var dp: Float = 1f
     var selectedId: String? = null
+    /** Per track index (p.tracks order): height of its row (0 = folded away) and its top. */
     var rowHeights: List<Float> = emptyList()
     var rowTops: List<Float> = emptyList()
+    /** Display order of track indices (top → bottom). */
+    var order: List<Int> = emptyList()
+    var mainIdx: Int = -1
     /** Per track: clip body height, attached-sound strip height, keyframe lane height. */
     var bodyHs: List<Float> = emptyList()
     var audioHs: List<Float> = emptyList()
     var keyHs: List<Float> = emptyList()
-    val contentH: Float get() = (rowTops.lastOrNull() ?: 0f) + (rowHeights.lastOrNull() ?: 0f)
+    /** Extra lane at the bottom ("+ Add audio"); 0 when not shown. */
+    var addAudioTop: Float = 0f
+    var addAudioH: Float = 0f
+    var contentH: Float = 0f
+    // Buttons drawn in the canvas (screen coordinates, refreshed on every draw).
+    var addBtn: Rect? = null
+    var muteBtn: Rect? = null
+    var addAudioBtn: Rect? = null
+    var transBtns: List<Pair<Rect, String>> = emptyList()
 
     val centerX: Float get() = width / 2f
     fun xOf(us: Long): Float = centerX + ((us - posUs) / 1_000_000.0 * pps).toFloat()
@@ -142,8 +165,8 @@ private class TimelineGeometry {
     fun rowY(i: Int): Float = rulerH + rowTops[i] - scrollY
 
     fun trackIndexAt(y: Float): Int {
-        val p = project ?: return -1
-        for (i in p.tracks.indices) {
+        for (i in order) {
+            if (rowHeights[i] <= 0f) continue
             val top = rowY(i)
             if (y >= top && y < top + rowHeights[i]) return i
         }
@@ -153,6 +176,11 @@ private class TimelineGeometry {
     fun hitTest(o: Offset): Hit {
         val p = project ?: return Hit.Empty
         if (o.y < rulerH) return Hit.Ruler
+        val slop = 6f * dp
+        for ((r, id) in transBtns) if (r.inflate(slop).contains(o)) return Hit.TransBtn(id)
+        addBtn?.let { if (it.inflate(slop).contains(o)) return Hit.AddMedia }
+        muteBtn?.let { if (it.inflate(slop).contains(o)) return Hit.MuteMain }
+        addAudioBtn?.let { if (it.contains(o)) return Hit.AddAudio }
         val i = trackIndexAt(o.y)
         if (i < 0) return Hit.Empty
         val t = p.tracks[i]
@@ -177,7 +205,7 @@ private class TimelineGeometry {
                 val xs = xOf(c.startUs)
                 val xe = xOf(c.endUs)
                 val mid = (xs + xe) / 2f
-                val zone = handleW * 1.4f
+                val zone = handleW * 1.5f
                 if (o.x >= xs - zone && o.x <= min(xs + zone, mid)) return Hit.Handle(c, true)
                 if (o.x <= xe + zone && o.x >= max(xe - zone, mid)) return Hit.Handle(c, false)
             }
@@ -187,6 +215,8 @@ private class TimelineGeometry {
         return Hit.ClipHit(t, c)
     }
 }
+
+private class TimelineIcons(val volUp: VectorPainter, val volOff: VectorPainter, val add: VectorPainter)
 
 @Composable
 fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
@@ -198,35 +228,63 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
     val view = LocalView.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val measurer = rememberTextMeasurer(cacheSize = 64)
+    val measurer = rememberTextMeasurer(cacheSize = 96)
+    val icons = TimelineIcons(
+        rememberVectorPainter(Icons.AutoMirrored.Outlined.VolumeUp),
+        rememberVectorPainter(Icons.AutoMirrored.Outlined.VolumeOff),
+        rememberVectorPainter(Icons.Outlined.Add),
+    )
 
     val geo = remember { TimelineGeometry() }
     var scrollY by remember { mutableFloatStateOf(0f) }
     var drag by remember { mutableStateOf<DragOp?>(null) }
     var flingJob by remember { mutableStateOf<Job?>(null) }
     var trackMenu by remember { mutableStateOf(false) }
+    val pro = c.proTrackHeaders
 
     val rulerH = with(density) { 26.dp.toPx() }
     val headerW = 74.dp
-    fun bodyDp(kind: TrackKind) = when (kind) {
-        TrackKind.VIDEO, TrackKind.OVERLAY -> 54.dp
-        TrackKind.TEXT -> 36.dp
-        TrackKind.AUDIO -> 44.dp
+    // The main track = the lowest video track (where "+" appends media).
+    val mainIdx = p.tracks.indexOfLast { it.kind == TrackKind.VIDEO }
+    fun bodyDp(i: Int, t: Track) = when {
+        i == mainIdx -> 58.dp
+        t.kind == TrackKind.TEXT -> 34.dp
+        t.kind == TrackKind.AUDIO -> 42.dp
+        t.clips.all { it.kind == ClipKind.TEXT } -> 34.dp
+        else -> 44.dp
     }
     // A visual track whose clips carry sound shows that sound as a waveform strip under them,
     // and any track with animated clips gets a keyframe lane below.
-    fun audioDp(t: Track) = if (t.acceptsVisual && t.clips.any { cl -> cl.kind == com.amiri.cut.core.model.ClipKind.MEDIA && p.asset(cl.assetId)?.hasAudio == true }) 22.dp else 0.dp
-    fun keyDp(t: Track) = if (t.clips.any { it.keyTimes().isNotEmpty() }) 18.dp else 0.dp
-    // Empty tracks fold to a thin row so the timeline stays compact.
-    fun rowHeightDp(t: Track) = if (t.clips.isEmpty()) 24.dp else bodyDp(t.kind) + audioDp(t) + keyDp(t)
-    val gapPx = with(density) { 3.dp.toPx() }
-    val heights = p.tracks.map { with(density) { rowHeightDp(it).toPx() } }
-    geo.bodyHs = p.tracks.map { with(density) { (if (it.clips.isEmpty()) 24.dp else bodyDp(it.kind)).toPx() } }
+    fun audioDp(t: Track) = if (t.acceptsVisual && t.clips.any { cl -> cl.kind == ClipKind.MEDIA && p.asset(cl.assetId)?.hasAudio == true }) 16.dp else 0.dp
+    fun keyDp(t: Track) = if (t.clips.any { it.keyTimes().isNotEmpty() }) 16.dp else 0.dp
+    fun rowHeightDp(i: Int, t: Track) = when {
+        t.clips.isEmpty() && i == mainIdx -> bodyDp(i, t)
+        t.clips.isEmpty() -> if (pro) 24.dp else 0.dp
+        else -> bodyDp(i, t) + audioDp(t) + keyDp(t)
+    }
+    val gapPx = with(density) { 6.dp.toPx() }
+    val heights = p.tracks.mapIndexed { i, t -> with(density) { rowHeightDp(i, t).toPx() } }
+    geo.bodyHs = p.tracks.mapIndexed { i, t -> with(density) { (if (t.clips.isEmpty() && i != mainIdx) 24.dp else bodyDp(i, t)).toPx() } }
     geo.audioHs = p.tracks.map { with(density) { audioDp(it).toPx() } }
     geo.keyHs = p.tracks.map { with(density) { keyDp(it).toPx() } }
-    val tops = run {
-        var acc = 0f
-        heights.map { h -> val t = acc; acc += h + gapPx; t }
+    // Display order: classic NLE order in pro mode; otherwise main track first (like CapCut),
+    // then layers above it (overlays, text), then sound.
+    val order: List<Int> = if (pro) p.tracks.indices.toList() else buildList {
+        if (mainIdx >= 0) add(mainIdx)
+        p.tracks.indices.filter { it != mainIdx && p.tracks[it].kind != TrackKind.AUDIO }.asReversed().forEach { add(it) }
+        p.tracks.indices.filter { p.tracks[it].kind == TrackKind.AUDIO }.forEach { add(it) }
+    }
+    val tops = FloatArray(p.tracks.size)
+    run {
+        var acc = gapPx
+        for (i in order) {
+            tops[i] = acc
+            if (heights[i] > 0f) acc += heights[i] + gapPx
+        }
+        val showAddAudio = !pro && p.tracks.none { it.kind == TrackKind.AUDIO && it.clips.isNotEmpty() }
+        geo.addAudioTop = acc
+        geo.addAudioH = if (showAddAudio) with(density) { 34.dp.toPx() } else 0f
+        geo.contentH = acc + geo.addAudioH + gapPx
     }
 
     // Refresh geometry for gesture handlers.
@@ -234,10 +292,13 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
     geo.posUs = pos
     geo.pps = c.pps
     geo.rulerH = rulerH
-    geo.handleW = with(density) { 12.dp.toPx() }
+    geo.dp = density.density
+    geo.handleW = with(density) { 14.dp.toPx() }
     geo.selectedId = c.selectedClipId
     geo.rowHeights = heights
-    geo.rowTops = tops
+    geo.rowTops = tops.toList()
+    geo.order = order
+    geo.mainIdx = mainIdx
     geo.scrollY = scrollY
 
     val fps = p.settings.fps
@@ -248,29 +309,26 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
     }
     fun clampScroll(v: Float) = v.coerceIn(0f, max(0f, geo.contentH - (geo.height - rulerH) + gapPx * 4))
 
-    Row(modifier.background(Color(0xFF0D0D0F))) {
-        // ───────── Track headers ─────────
-        Box(Modifier.width(headerW).fillMaxHeight().clipToBounds()) {
-            Column(
-                Modifier
-                    .wrapContentHeight(Alignment.Top, unbounded = true)
-                    .offset { IntOffset(0, (rulerH - scrollY).roundToInt()) },
-            ) {
-                p.tracks.forEachIndexed { i, t ->
-                    TrackHeader(
-                        t, Modifier.height(rowHeightDp(t)).fillMaxWidth(),
-                        onLock = { c.toggleTrackLock(t.id) },
-                        onHide = { c.toggleTrackHidden(t.id) },
-                        onMute = { c.toggleTrackMuted(t.id) },
-                        onDelete = { c.removeTrack(t.id) },
-                        compact = t.clips.isEmpty(),
-                    )
-                    if (i < p.tracks.lastIndex) Box(Modifier.height(3.dp))
+    Row(modifier.background(Amiri.Bg)) {
+        // ───────── Track headers (pro mode only) ─────────
+        if (pro) Box(Modifier.width(headerW).fillMaxHeight().clipToBounds()) {
+            Box(Modifier.offset { IntOffset(0, (rulerH - scrollY).roundToInt()) }.wrapContentHeight(Alignment.Top, unbounded = true)) {
+                order.forEach { i ->
+                    val t = p.tracks[i]
+                    if (heights[i] > 0f) Box(Modifier.offset { IntOffset(0, tops[i].roundToInt()) }) {
+                        TrackHeader(
+                            t, Modifier.height(rowHeightDp(i, t)).width(headerW),
+                            onLock = { c.toggleTrackLock(t.id) },
+                            onHide = { c.toggleTrackHidden(t.id) },
+                            onMute = { c.toggleTrackMuted(t.id) },
+                            onDelete = { c.removeTrack(t.id) },
+                            compact = t.clips.isEmpty(),
+                        )
+                    }
                 }
             }
             Box(
-                Modifier.fillMaxWidth().height(26.dp).background(Color(0xFF0D0D0F))
-                    .clickable { trackMenu = true },
+                Modifier.fillMaxWidth().height(26.dp).background(Amiri.Bg).clickable { trackMenu = true },
                 contentAlignment = Alignment.Center,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -493,7 +551,14 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
                                 lastTapPos = down.position
                                 when (hit) {
                                     Hit.Ruler -> { c.engine.pause(); c.engine.seekTo(geo.usAt(down.position.x)); Haptics.tick(view) }
-                                    is Hit.ClipHit -> { c.select(hit.clip.id); Haptics.select(view) }
+                                    Hit.AddMedia -> { Haptics.confirm(view); c.openAddMedia(Placement.APPEND_TO_MAIN) }
+                                    Hit.AddAudio -> { Haptics.select(view); c.openMusicPicker() }
+                                    Hit.MuteMain -> {
+                                        val mt = geo.project?.tracks?.getOrNull(geo.mainIdx)
+                                        if (mt != null) { Haptics.confirm(view); c.toggleTrackMuted(mt.id); c.toast = Toast(if (mt.muted) "Clip audio on" else "Clip audio muted") }
+                                    }
+                                    is Hit.TransBtn -> { Haptics.select(view); c.select(hit.clipId); c.activeTool = EditorTool.TRANSITION }
+                                    is Hit.ClipHit -> { c.select(if (c.selectedClipId == hit.clip.id) null else hit.clip.id); Haptics.select(view) }
                                     is Hit.Handle -> Unit
                                     is Hit.KeyHit -> {
                                         c.engine.pause()
@@ -524,7 +589,11 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
                                     c.addMarker(geo.usAt(down.position.x))
                                     waitUp()
                                 }
-                                Hit.Empty -> scrub()
+                                Hit.Empty -> {
+                                    val ti = geo.trackIndexAt(down.position.y)
+                                    if (ti >= 0) { Haptics.heavy(view); c.trackMenuFor = geo.project?.tracks?.getOrNull(ti)?.id; waitUp() } else scrub()
+                                }
+                                else -> waitUp()
                             }
                             Phase.MULTI -> pinch()
                         }
@@ -535,7 +604,7 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
             geo.height = size.height
             drawTimeline(
                 geo = geo, project = p, drag = drag, accent = accent,
-                measurer = measurer, c = c, gapPx = gapPx,
+                measurer = measurer, c = c, icons = icons,
                 // read versions so new thumbnails/waveforms trigger a redraw
                 versions = thumbsVersion + wavesVersion,
             )
@@ -546,7 +615,7 @@ fun TimelineView(c: EditorController, modifier: Modifier = Modifier) {
 @Composable
 private fun TrackHeader(t: Track, modifier: Modifier, onLock: () -> Unit, onHide: () -> Unit, onMute: () -> Unit, onDelete: () -> Unit, compact: Boolean = false) {
     if (compact) {
-        Row(modifier.background(Color(0xFF101013)).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier.background(Amiri.Surface).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(t.name, color = Amiri.TextTertiary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
             Icon(Icons.Outlined.Close, "Delete track", tint = Amiri.TextTertiary, modifier = Modifier.size(16.dp).clickable(onClick = onDelete).padding(2.dp))
         }
@@ -554,7 +623,7 @@ private fun TrackHeader(t: Track, modifier: Modifier, onLock: () -> Unit, onHide
     }
     val small = t.kind == TrackKind.TEXT
     Column(
-        modifier.background(Color(0xFF131316)).padding(horizontal = 6.dp, vertical = if (small) 2.dp else 5.dp),
+        modifier.background(Amiri.Surface).padding(horizontal = 6.dp, vertical = if (small) 2.dp else 5.dp),
         verticalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -592,15 +661,13 @@ private fun HeaderIcon(icon: ImageVector, active: Boolean, onClick: () -> Unit) 
 
 // ───────────────────────────── drawing ─────────────────────────────
 
-private val RulerBg = Color(0xFF111114)
-private val RowA = Color(0xFF121215)
-private val RowB = Color(0xFF101013)
-
-private fun clipColor(kind: TrackKind): Color = when (kind) {
-    TrackKind.VIDEO -> Amiri.ClipVideo
-    TrackKind.OVERLAY -> Amiri.ClipOverlay
-    TrackKind.TEXT -> Amiri.ClipText
-    TrackKind.AUDIO -> Amiri.ClipAudio
+private fun laneColor(track: Track, clip: Clip): Color = when {
+    clip.kind == ClipKind.TEXT -> Amiri.ClipText
+    clip.kind == ClipKind.SHAPE -> Amiri.ClipShape
+    clip.kind == ClipKind.ADJUSTMENT -> Amiri.ClipAdjust
+    track.kind == TrackKind.AUDIO -> Amiri.ClipAudio
+    track.kind == TrackKind.OVERLAY -> Amiri.ClipOverlay
+    else -> Amiri.ClipVideo
 }
 
 private fun DrawScope.drawTimeline(
@@ -610,26 +677,92 @@ private fun DrawScope.drawTimeline(
     accent: Color,
     measurer: androidx.compose.ui.text.TextMeasurer,
     c: EditorController,
-    gapPx: Float,
+    icons: TimelineIcons,
     @Suppress("UNUSED_PARAMETER") versions: Int,
 ) {
     val w = size.width
+    val dp = geo.dp
     val rulerH = geo.rulerH
     val fps = project.settings.fps
+    val buttons = ArrayList<Pair<Rect, String>>()
+    geo.addBtn = null; geo.muteBtn = null; geo.addAudioBtn = null
 
     // Tracks area
     clipRect(top = rulerH) {
-        project.tracks.forEachIndexed { i, t ->
-            val y = geo.rowY(i)
+        for (i in geo.order) {
+            val t = project.tracks[i]
             val h = geo.rowHeights[i]
-            if (y > size.height || y + h < rulerH) return@forEachIndexed
-            drawRect(if (i % 2 == 0) RowA else RowB, Offset(0f, y), Size(w, h))
+            if (h <= 0f) continue
+            val y = geo.rowY(i)
+            if (y > size.height || y + h < rulerH) continue
+            if (t.clips.isEmpty()) {
+                if (i == geo.mainIdx) {
+                    // Empty project: one big "Add media" target where the main track will be.
+                    val bw = 168f * dp; val bh = geo.bodyHs[i] - 8f * dp
+                    val r = Rect(Offset(geo.xOf(0) + 8f * dp, y + 4f * dp), Size(bw, bh))
+                    drawRoundRect(Color.White, r.topLeft, r.size, CornerRadius(10f * dp))
+                    translate(r.left + 14f * dp, r.top + (bh - 22f * dp) / 2f) { with(icons.add) { draw(Size(22f * dp, 22f * dp), colorFilter = ColorFilter.tint(Color.Black)) } }
+                    val lay = measurer.measure("Add media", TextStyle(color = Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = AmiriFont))
+                    drawText(lay, topLeft = Offset(r.left + 44f * dp, r.top + (bh - lay.size.height) / 2f))
+                    geo.addBtn = r
+                } else drawRoundRect(Color.White.copy(alpha = 0.03f), Offset(0f, y), Size(w, h), CornerRadius(4f * dp))
+                continue
+            }
             for (clip in t.clips) {
                 if (drag != null && drag.clipId == clip.id) continue
                 drawClip(geo, project, t, clip, y, geo.bodyHs[i], geo.audioHs[i], geo.keyHs[i], accent, measurer, c, ghost = false, invalid = false)
             }
+            // Transition buttons on every butt cut of this track.
+            for (k in 1 until t.clips.size) {
+                val a = t.clips[k - 1]; val b = t.clips[k]
+                if (abs(a.endUs - b.startUs) > 1_000) continue
+                val x = geo.xOf(b.startUs)
+                if (x < -20f * dp || x > w + 20f * dp) continue
+                val s = (if (i == geo.mainIdx) 22f else 18f) * dp
+                val r = Rect(Offset(x - s / 2f, y + geo.bodyHs[i] / 2f - s / 2f), Size(s, s))
+                val has = b.transIn != null
+                drawRoundRect(if (has) accent else Color.White, r.topLeft, r.size, CornerRadius(5f * dp))
+                drawRoundRect(Color.Black.copy(alpha = 0.35f), r.topLeft, r.size, CornerRadius(5f * dp), style = Stroke(1f * dp))
+                // bow-tie glyph
+                val gx = r.center.x; val gy = r.center.y; val gw = s * 0.26f; val gh = s * 0.22f
+                val bow = Path().apply { moveTo(gx - gw, gy - gh); lineTo(gx + gw, gy + gh); lineTo(gx + gw, gy - gh); lineTo(gx - gw, gy + gh); close() }
+                drawPath(bow, if (has) Color.Black.copy(alpha = 0.8f) else Color(0xFF26262A))
+                buttons += r to b.id
+            }
+            // Mute switch + add button around the main track.
+            if (i == geo.mainIdx) {
+                val bh = geo.bodyHs[i]
+                val first = t.clips.first()
+                val mx = geo.xOf(first.startUs) - 50f * dp
+                if (mx > -40f * dp) {
+                    val r = Rect(Offset(mx, y + bh / 2f - 19f * dp), Size(38f * dp, 38f * dp))
+                    drawRoundRect(Amiri.SurfaceHigh, r.topLeft, r.size, CornerRadius(10f * dp))
+                    val ic = if (t.muted) icons.volOff else icons.volUp
+                    translate(r.left + 9f * dp, r.top + 9f * dp) { with(ic) { draw(Size(20f * dp, 20f * dp), colorFilter = ColorFilter.tint(if (t.muted) Amiri.Danger else Amiri.TextPrimary)) } }
+                    geo.muteBtn = r
+                }
+                val ex = geo.xOf(t.clips.last().endUs) + 12f * dp
+                if (ex < w + 10f * dp) {
+                    val s = min(40f * dp, bh - 8f * dp)
+                    val r = Rect(Offset(ex, y + bh / 2f - s / 2f), Size(s, s))
+                    drawRoundRect(Color.White, r.topLeft, r.size, CornerRadius(9f * dp))
+                    translate(r.left + (s - 24f * dp) / 2f, r.top + (s - 24f * dp) / 2f) { with(icons.add) { draw(Size(24f * dp, 24f * dp), colorFilter = ColorFilter.tint(Color.Black)) } }
+                    geo.addBtn = r
+                }
+            }
             if (t.locked) drawHatch(Offset(0f, y), Size(w, h))
-            if (t.hidden) drawRect(Color.Black.copy(alpha = 0.45f), Offset(0f, y), Size(w, h))
+            if (t.hidden) drawRect(Color.Black.copy(alpha = 0.5f), Offset(0f, y), Size(w, h))
+        }
+
+        // "+ Add audio" lane (until there is music).
+        if (geo.addAudioH > 0f) {
+            val y = geo.rulerH + geo.addAudioTop - geo.scrollY
+            val left = max(geo.xOf(0), 8f * dp)
+            val r = Rect(Offset(left, y), Size(max(w - left - 8f * dp, 140f * dp), geo.addAudioH))
+            drawRoundRect(Amiri.SurfaceHigh, r.topLeft, r.size, CornerRadius(8f * dp))
+            val lay = measurer.measure("＋  Add audio", TextStyle(color = Amiri.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, fontFamily = AmiriFont))
+            drawText(lay, topLeft = Offset(r.left + 12f * dp, r.top + (r.height - lay.size.height) / 2f))
+            geo.addAudioBtn = r
         }
 
         // Drag ghost
@@ -637,7 +770,7 @@ private fun DrawScope.drawTimeline(
             is DragOp.Move -> {
                 val ti = project.tracks.indexOfFirst { it.id == drag.targetTrackId }
                 val src = project.clip(drag.clipId)
-                if (ti >= 0 && src != null) {
+                if (ti >= 0 && src != null && geo.rowHeights[ti] > 0f) {
                     val ghost = src.copy(startUs = drag.startUs)
                     drawClip(geo, project, project.tracks[ti], ghost, geo.rowY(ti), geo.bodyHs[ti], geo.audioHs[ti], geo.keyHs[ti], accent, measurer, c, ghost = true, invalid = drag.result == null)
                 }
@@ -653,41 +786,39 @@ private fun DrawScope.drawTimeline(
         for (m in project.markers) {
             val x = geo.xOf(m.timeUs)
             if (x < 0 || x > w) continue
-            if (m.label == "♪") drawLine(Color(0xFFFFD27A).copy(alpha = 0.18f), Offset(x, rulerH), Offset(x, size.height), 1f)
-            else drawLine(accent.copy(alpha = 0.22f), Offset(x, rulerH), Offset(x, size.height), 1f)
+            if (m.label == "♪") drawLine(Color(0xFFFFD27A).copy(alpha = 0.16f), Offset(x, rulerH), Offset(x, size.height), 1f)
+            else drawLine(accent.copy(alpha = 0.25f), Offset(x, rulerH), Offset(x, size.height), 1f)
         }
     }
+    geo.transBtns = buttons
 
     // Ruler
-    drawRect(RulerBg, Offset.Zero, Size(w, rulerH))
+    drawRect(Amiri.Bg, Offset.Zero, Size(w, rulerH))
     drawRuler(geo, fps, measurer, rulerH)
     for (m in project.markers) {
         val x = geo.xOf(m.timeUs)
         if (x < -10 || x > w + 10) continue
         if (m.label == "♪") {
-            // Beat: a small note dot.
-            drawCircle(Color(0xFFFFD27A), 3.2f, Offset(x, rulerH * 0.78f))
+            drawCircle(Color(0xFFFFD27A), 3.2f, Offset(x, rulerH * 0.82f))
             continue
         }
         val path = Path().apply {
             moveTo(x - 5f, 2f); lineTo(x + 5f, 2f); lineTo(x + 5f, rulerH * 0.45f); lineTo(x, rulerH * 0.62f); lineTo(x - 5f, rulerH * 0.45f); close()
         }
-        drawPath(path, accent.copy(alpha = 0.85f))
+        drawPath(path, accent.copy(alpha = 0.9f))
     }
-    drawLine(Color.White.copy(alpha = 0.06f), Offset(0f, rulerH), Offset(w, rulerH), 1f)
 
     // Snap guide
     val snap = when (drag) { is DragOp.Move -> drag.snapUs; is DragOp.Trim -> drag.snapUs; null -> null }
     if (snap != null) {
         val x = geo.xOf(snap)
-        drawLine(Color(0xFFFFD27A), Offset(x, 0f), Offset(x, size.height), 1.5f)
+        drawLine(Color(0xFFFFD27A), Offset(x, 0f), Offset(x, size.height), 1.5f * dp)
     }
 
     // Playhead (fixed at center; the timeline scrolls beneath it)
     val cx = geo.centerX
-    drawLine(accent, Offset(cx, rulerH * 0.3f), Offset(cx, size.height), 2f)
-    // Playhead cap: a little paw.
-    paw(Offset(cx, rulerH * 0.36f), rulerH * 0.6f, accent)
+    drawLine(Color.White, Offset(cx, rulerH * 0.35f), Offset(cx, size.height), 2f * dp)
+    paw(Offset(cx, rulerH * 0.34f), rulerH * 0.62f, accent)
 }
 
 private fun DrawScope.drawHatch(o: Offset, s: Size) {
@@ -716,28 +847,32 @@ private fun DrawScope.drawClip(
     invalid: Boolean,
 ) {
     val w = size.width
+    val dp = geo.dp
     val x0 = geo.xOf(clip.startUs)
     val x1 = geo.xOf(clip.endUs)
     if (x1 < -4f || x0 > w + 4f) return
-    val pad = 2f
-    val top = rowY + pad
-    val h = rowH - pad * 2
-    val left = max(x0, -8f)
-    val right = min(x1, w + 8f)
-    val rr = CornerRadius(7f, 7f)
+    val gap = 1f * dp
+    val top = rowY
+    val h = rowH
+    val left = max(x0 + gap, -8f)
+    val right = min(x1 - gap, w + 8f)
+    if (right <= left) return
+    val rr = CornerRadius(7f * dp, 7f * dp)
     val selected = clip.id == geo.selectedId
     val asset = project.asset(clip.assetId)
     val missing = asset != null && clip.assetId in c.missingAssets
-
-    val baseColor = when (clip.kind) {
-        com.amiri.cut.core.model.ClipKind.TEXT -> Amiri.ClipText
-        com.amiri.cut.core.model.ClipKind.ADJUSTMENT -> Color(0xFF2E2A45)
-        else -> clipColor(track.kind)
+    val lane = laneColor(track, clip)
+    val isMediaVisual = clip.kind == ClipKind.MEDIA && track.kind != TrackKind.AUDIO
+    val bodyColor = when {
+        isMediaVisual -> Color(0xFF15171C)
+        track.kind == TrackKind.AUDIO -> lane.copy(alpha = 0.26f)
+        else -> lane
     }
-    drawRoundRect(baseColor.copy(alpha = if (ghost) 0.75f else 1f), Offset(left, top), Size(right - left, h), rr)
+    val roundPath = Path().apply { addRoundRect(androidx.compose.ui.geometry.RoundRect(left, top, right, top + h, rr)) }
+    drawPath(roundPath, bodyColor.copy(alpha = if (ghost) 0.75f * bodyColor.alpha else bodyColor.alpha))
 
-    clipRect(max(left, 0f), top, min(right, w), top + h) {
-        if (asset != null && track.kind != TrackKind.AUDIO) {
+    clipPath(roundPath) {
+        if (asset != null && isMediaVisual) {
             val strip = c.app.thumbnails.strip(asset.id)
             if (strip != null) {
                 val tileH = h
@@ -754,118 +889,123 @@ private fun DrawScope.drawClip(
                         srcOffset = IntOffset.Zero,
                         srcSize = IntSize(img.width, img.height),
                         dstOffset = IntOffset(tx.roundToInt(), top.roundToInt()),
-                        dstSize = IntSize(ceil(tileW).toInt(), h.roundToInt()),
-                        alpha = if (ghost) 0.6f else 0.92f,
+                        dstSize = IntSize(ceil(tileW).toInt() + 1, h.roundToInt()),
+                        alpha = if (ghost) 0.6f else 1f,
                     )
                 }
-                // Readability scrim behind the clip name
-                drawRect(Color.Black.copy(alpha = 0.28f), Offset(left, top), Size(right - left, 16f + 10f))
             }
+            if (track.kind == TrackKind.OVERLAY) drawRect(Brush.verticalGradient(listOf(Color.Transparent, lane.copy(alpha = 0.35f)), top, top + h), Offset(left, top), Size(right - left, h))
         }
-        if (asset != null && (track.kind == TrackKind.AUDIO) && asset.hasAudio) {
+        if (asset != null && track.kind == TrackKind.AUDIO && asset.hasAudio) {
             val wf = c.app.waveforms.get(asset.id)
+            val col = Amiri.ClipAudio.copy(alpha = if (track.muted || clip.muted) 0.35f else 0.95f)
             if (wf != null) {
-                val mid = top + h * 0.58f
-                val amp = h * 0.38f
-                val col = Color(0xFF8FE3C4).copy(alpha = if (track.muted) 0.25f else 0.7f)
+                val mid = top + h * 0.56f
+                val amp = h * 0.36f
                 var x = max(left, 0f)
                 val end = min(right, w)
-                val step = 2f
+                val step = 3f * dp
                 while (x < end) {
                     val t0 = geo.usAt(x).coerceIn(clip.startUs, clip.endUs)
                     val t1 = geo.usAt(x + step).coerceIn(clip.startUs, clip.endUs)
                     val pk = wf.peak(clip.sourceTimeAt(t0), clip.sourceTimeAt(t1))
-                    val bh = max(1f, pk * amp)
-                    drawLine(col, Offset(x, mid - bh), Offset(x, mid + bh), 1.4f)
+                    val bh = max(1f * dp, pk * amp)
+                    drawLine(col, Offset(x, mid - bh), Offset(x, mid + bh), 1.6f * dp)
                     x += step
                 }
             } else {
-                drawLine(Color(0xFF8FE3C4).copy(alpha = 0.25f), Offset(left, top + h * 0.58f), Offset(right, top + h * 0.58f), 1f)
+                drawLine(col.copy(alpha = 0.4f), Offset(left, top + h * 0.56f), Offset(right, top + h * 0.56f), 1f)
             }
         }
 
-        // Clip name
+        // Label
         val label = buildString {
             if (clip.locked) append("🔒 ")
-            when (clip.kind) {
-                com.amiri.cut.core.model.ClipKind.TEXT -> append("T  ")
-                com.amiri.cut.core.model.ClipKind.ADJUSTMENT -> append("◇ ")
+            when {
+                clip.kind == ClipKind.TEXT -> append("T  ")
+                clip.kind == ClipKind.ADJUSTMENT -> append("◇ ")
+                track.kind == TrackKind.AUDIO -> append("♪  ")
                 else -> Unit
             }
-            if (clip.effects.isNotEmpty()) append("fx${clip.effects.size} · ")
-            if (clip.speed != 1f || clip.ramp != null) append(if (clip.ramp != null) "ramp · " else "${"%.2g".format(clip.speed)}× · ")
-            if (clip.roto != null && clip.roto.keys.isNotEmpty()) append(if (clip.roto.enabled) "◐ ROTO · " else "◐ off · ")
-            append(clip.name)
+            if (clip.kind == ClipKind.TEXT) append(clip.text?.text?.lineSequence()?.firstOrNull()?.ifBlank { clip.name } ?: clip.name) else append(clip.name)
             if (missing) append(" · MISSING")
         }
-        val textX = max(left, 0f) + 6f
-        val avail = (min(right, w) - textX - 4f).toInt()
-        if (avail > 20) {
+        val onLane = clip.kind == ClipKind.TEXT || clip.kind == ClipKind.SHAPE || clip.kind == ClipKind.ADJUSTMENT
+        val textCol = when {
+            missing -> Amiri.Danger
+            onLane -> Color(0xFF17110A)
+            else -> Color.White
+        }
+        val showLabel = !isMediaVisual || track.kind == TrackKind.OVERLAY || (right - left) > 220f * dp
+        val textX = max(left, 0f) + 8f * dp
+        val avail = (min(right, w) - textX - 6f * dp).toInt()
+        if (showLabel && avail > 24 && !(isMediaVisual && !selected && track.kind != TrackKind.OVERLAY)) {
             val layout = measurer.measure(
                 label,
-                style = TextStyle(color = if (missing) Amiri.Danger else Color.White.copy(alpha = 0.9f), fontSize = 9.sp, fontWeight = FontWeight.Medium, fontFamily = FontFamily.SansSerif),
+                style = TextStyle(color = textCol, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = AmiriFont,
+                    shadow = if (onLane) null else androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.7f), Offset(0f, 1f), 3f)),
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 constraints = Constraints(maxWidth = avail),
             )
-            drawText(layout, topLeft = Offset(textX, top + 3f))
+            val ly = if (onLane || track.kind == TrackKind.AUDIO) top + (if (track.kind == TrackKind.AUDIO) 4f * dp else (h - layout.size.height) / 2f) else top + h - layout.size.height - 4f * dp
+            drawText(layout, topLeft = Offset(textX, ly))
+        }
+
+        // Duration badge (selected) and speed badge.
+        val badges = buildList {
+            if (selected) add(String.format(java.util.Locale.US, "%.1fs", clip.durationUs / 1_000_000.0))
+            if (clip.speed != 1f || clip.ramp != null) add(if (clip.ramp != null) "curve" else String.format(java.util.Locale.US, "%.2g×", clip.speed))
+            if (clip.effects.isNotEmpty()) add("fx ${clip.effects.size}")
+            if (clip.roto != null && clip.roto.keys.isNotEmpty()) add(if (clip.roto.enabled) "cut-out" else "cut-out off")
+        }
+        var bx = max(left, 0f) + 5f * dp
+        for (b in badges) {
+            val lay = measurer.measure(b, TextStyle(color = Color.White, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = AmiriFont))
+            val bw = lay.size.width + 10f * dp
+            if (bx + bw > min(right, w) - 4f * dp) break
+            drawRoundRect(Color.Black.copy(alpha = 0.6f), Offset(bx, top + 4f * dp), Size(bw, lay.size.height + 3f * dp), CornerRadius(5f * dp))
+            drawText(lay, topLeft = Offset(bx + 5f * dp, top + 5.5f * dp))
+            bx += bw + 4f * dp
         }
     }
 
-    if (missing) drawRoundRect(Amiri.Danger.copy(alpha = 0.16f), Offset(left, top), Size(right - left, h), rr)
-    if (invalid) drawRoundRect(Amiri.Danger.copy(alpha = 0.35f), Offset(left, top), Size(right - left, h), rr)
+    if (missing) drawPath(roundPath, Amiri.Danger.copy(alpha = 0.18f))
+    if (invalid) drawPath(roundPath, Amiri.Danger.copy(alpha = 0.35f))
 
-    val borderColor = when {
-        invalid -> Amiri.Danger
-        selected || ghost -> accent
-        else -> Color.White.copy(alpha = 0.08f)
-    }
-    drawRoundRect(borderColor, Offset(left, top), Size(right - left, h), rr, style = Stroke(if (selected || ghost) 2.5f else 1f))
-
-    // Transition marker at the start of the clip (a bow-tie across the cut).
-    clip.transIn?.let { tr ->
-        val half = (tr.durationUs / 2 / 1_000_000.0 * geo.pps).toFloat().coerceAtLeast(6f)
-        val my = top + h * 0.5f
-        val bh = min(h * 0.32f, 12f)
-        val bow = Path().apply {
-            moveTo(x0 - half, my - bh); lineTo(x0 + half, my + bh); lineTo(x0 + half, my - bh); lineTo(x0 - half, my + bh); close()
-        }
-        drawPath(bow, Color(0xFFFFD27A).copy(alpha = 0.85f))
-        drawPath(bow, Color.Black.copy(alpha = 0.6f), style = Stroke(1f))
+    when {
+        invalid -> drawPath(roundPath, Amiri.Danger, style = Stroke(2f * dp))
+        selected || ghost -> drawPath(roundPath, Color.White, style = Stroke(2f * dp))
+        isMediaVisual && track.kind == TrackKind.OVERLAY -> drawPath(roundPath, Amiri.ClipOverlay.copy(alpha = 0.9f), style = Stroke(1.5f * dp))
+        else -> drawPath(roundPath, Color.White.copy(alpha = 0.06f), style = Stroke(1f))
     }
 
     // Attached sound: waveform strip right under the picture (louder = taller).
     if (soundH > 0f && asset != null && asset.hasAudio && track.kind != TrackKind.AUDIO) {
-        val st = rowY + rowH + 1f
-        val sh = soundH - 2f
+        val st = rowY + rowH + 2f * dp
+        val sh = soundH - 3f * dp
         val dim = clip.muted || track.muted
-        val col = Color(0xFF8FE3C4).copy(alpha = if (dim) 0.22f else 0.8f)
-        drawRoundRect(Color(0xFF173A33).copy(alpha = if (ghost) 0.6f else 1f), Offset(left, st), Size(right - left, sh), CornerRadius(5f, 5f))
+        val col = Amiri.ClipAudio.copy(alpha = if (dim) 0.25f else 0.85f)
+        drawRoundRect(Amiri.ClipAudio.copy(alpha = if (ghost) 0.08f else 0.14f), Offset(left, st), Size(right - left, sh), CornerRadius(4f * dp))
         clipRect(max(left, 0f), st, min(right, w), st + sh) {
             val wf = c.app.waveforms.get(asset.id)
-            val base = st + sh - 2f
+            val base = st + sh - 1f * dp
             if (wf != null) {
                 var x = max(left, 0f)
                 val end = min(right, w)
-                val step = 2f
+                val step = 2f * dp
                 val path = Path().apply { moveTo(x, base) }
                 while (x <= end) {
                     val t0 = geo.usAt(x).coerceIn(clip.startUs, clip.endUs)
                     val t1 = geo.usAt(x + step).coerceIn(clip.startUs, clip.endUs)
                     val g = com.amiri.cut.engine.PreviewEngine.gainAt(track.copy(muted = false), clip.copy(muted = false), t0).coerceIn(0f, 2f)
                     val pk = (wf.peak(clip.sourceTimeAt(t0), clip.sourceTimeAt(t1)) * g).coerceIn(0f, 1f)
-                    path.lineTo(x, base - max(0.8f, pk * (sh - 4f)))
+                    path.lineTo(x, base - max(0.8f, pk * (sh - 3f * dp)))
                     x += step
                 }
                 path.lineTo(end, base); path.close()
                 drawPath(path, col)
             } else {
                 drawLine(col, Offset(left, base), Offset(right, base), 1f)
-            }
-            val label = if (clip.muted) "♪ muted" else "♪ Audio"
-            val avail = (min(right, w) - max(left, 0f) - 8f).toInt()
-            if (avail > 30) {
-                val lay = measurer.measure(label, TextStyle(color = Color.White.copy(alpha = 0.75f), fontSize = 8.sp), maxLines = 1, constraints = Constraints(maxWidth = avail))
-                drawText(lay, topLeft = Offset(max(left, 0f) + 5f, st + 1f))
             }
         }
     }
@@ -877,24 +1017,20 @@ private fun DrawScope.drawClip(
         if (marks.isNotEmpty()) {
             val lt = rowY + rowH + soundH
             val ky = lt + keyH / 2f
-            drawRect(Color.White.copy(alpha = if (selected) 0.06f else 0.03f), Offset(left, lt + 1f), Size(right - left, keyH - 2f))
-            val d = min(6.5f, keyH * 0.36f)
+            val d = min(6f * dp, keyH * 0.36f)
             val keyCol = if (selected) Color(0xFFFFD27A) else Color(0xFFBFC3CC)
-            // Thin line between consecutive keys shows the animated span.
             for (k in 0 until marks.size - 1) {
                 val xa = geo.xOf(clip.startUs + marks[k].t); val xb = geo.xOf(clip.startUs + marks[k + 1].t)
-                drawLine(keyCol.copy(alpha = 0.35f), Offset(xa, ky), Offset(xb, ky), 1.2f)
+                drawLine(keyCol.copy(alpha = 0.35f), Offset(xa, ky), Offset(xb, ky), 1.2f * dp)
             }
             for (m in marks) {
                 val kx = geo.xOf(clip.startUs + m.t)
                 if (kx < left - d || kx > right + d) continue
                 val shape = Path().apply {
-                    // Left half (incoming side)
                     moveTo(kx, ky - d)
                     if (m.easeIn) { lineTo(kx - d, ky - d); lineTo(kx - d * 0.25f, ky); lineTo(kx - d, ky + d) }
                     else lineTo(kx - d, ky)
                     lineTo(kx, ky + d)
-                    // Right half (outgoing side)
                     when {
                         m.hold -> { lineTo(kx + d * 0.85f, ky + d); lineTo(kx + d * 0.85f, ky - d) }
                         m.easeOut -> { lineTo(kx + d, ky + d); lineTo(kx + d * 0.25f, ky); lineTo(kx + d, ky - d) }
@@ -908,17 +1044,19 @@ private fun DrawScope.drawClip(
         }
     }
 
-    // Trim handles
+    // Trim handles (white, CapCut style)
     if (selected && !ghost) {
         val hw = geo.handleW
-        val handleColor = if (clip.locked || track.locked) Amiri.TextTertiary else accent
+        val locked = clip.locked || track.locked
+        val handleColor = if (locked) Amiri.TextTertiary else Color.White
+        val grip = Color.Black.copy(alpha = 0.55f)
         if (x0 > -hw) {
-            drawRoundRect(handleColor, Offset(x0 - 1f, top), Size(hw, h), CornerRadius(6f, 6f))
-            drawLine(Color.Black.copy(alpha = 0.55f), Offset(x0 + hw / 2f - 1f, top + h * 0.3f), Offset(x0 + hw / 2f - 1f, top + h * 0.7f), 2f)
+            drawRoundRect(handleColor, Offset(x0 - hw + 2f * dp, top), Size(hw, h), CornerRadius(6f * dp, 6f * dp))
+            drawLine(grip, Offset(x0 - hw / 2f + 2f * dp, top + h * 0.32f), Offset(x0 - hw / 2f + 2f * dp, top + h * 0.68f), 2f * dp)
         }
         if (x1 < w + hw) {
-            drawRoundRect(handleColor, Offset(x1 - hw + 1f, top), Size(hw, h), CornerRadius(6f, 6f))
-            drawLine(Color.Black.copy(alpha = 0.55f), Offset(x1 - hw / 2f + 1f, top + h * 0.3f), Offset(x1 - hw / 2f + 1f, top + h * 0.7f), 2f)
+            drawRoundRect(handleColor, Offset(x1 - 2f * dp, top), Size(hw, h), CornerRadius(6f * dp, 6f * dp))
+            drawLine(grip, Offset(x1 + hw / 2f - 2f * dp, top + h * 0.32f), Offset(x1 + hw / 2f - 2f * dp, top + h * 0.68f), 2f * dp)
         }
     }
 }
@@ -927,41 +1065,34 @@ private fun DrawScope.drawRuler(geo: TimelineGeometry, fps: Int, measurer: andro
     val w = size.width
     val pps = geo.pps
     val frameUs = FrameTime.frameDurationUs(fps)
-    // Candidate major intervals: whole frames first, then seconds.
+    // Candidate label intervals: whole frames first, then seconds.
     val frameSteps = listOf(1, 2, 5, 10).filter { it < fps }.map { it * frameUs }
     val secSteps = listOf(1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800).map { it * 1_000_000.0 }
-    val minLabelPx = 74f
-    val major = (frameSteps + secSteps).firstOrNull { it / 1_000_000.0 * pps >= minLabelPx } ?: secSteps.last()
+    val minLabelPx = 78f * geo.dp / 2.6f
+    val major = (frameSteps + secSteps).firstOrNull { it / 1_000_000.0 * pps >= minLabelPx * 2.6f } ?: secSteps.last()
     val majorIsFrames = major < 1_000_000.0
-    val majorPx = major / 1_000_000.0 * pps
-    val minorDiv = when {
-        majorIsFrames -> (major / frameUs).roundToInt().coerceAtLeast(1)
-        majorPx / 5 >= 8 -> 5
-        majorPx / 2 >= 8 -> 2
-        else -> 1
-    }
-    val minor = major / minorDiv
+    val minor = major / 2.0
 
     val tStart = max(0.0, geo.usAt(0f).toDouble())
     val tEnd = geo.usAt(w).toDouble()
     var i = floor(tStart / minor).toLong()
-    val style = TextStyle(color = Amiri.TextSecondary, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+    val style = TextStyle(color = Amiri.TextTertiary, fontSize = 10.sp, fontFamily = AmiriFont, fontWeight = FontWeight.Medium, fontFeatureSettings = "tnum")
     while (true) {
         val t = i * minor
         if (t > tEnd) break
         if (t >= 0) {
             val x = geo.xOf(t.toLong())
-            val isMajor = i % minorDiv == 0L
-            val th = if (isMajor) rulerH * 0.42f else rulerH * 0.2f
-            drawLine(Color.White.copy(alpha = if (isMajor) 0.35f else 0.14f), Offset(x, rulerH - th), Offset(x, rulerH), 1f)
+            val isMajor = i % 2 == 0L
             if (isMajor) {
                 val us = t.roundToLong()
-                val text = if (majorIsFrames) FrameTime.timecode(us, fps) else {
-                    val s = us / 1_000_000
-                    if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
-                }
+                val text = if (majorIsFrames) {
+                    val f = ((us % 1_000_000L) * fps / 1_000_000L)
+                    if (f == 0L) FrameTime.shortClock(us) else "${f}f"
+                } else FrameTime.shortClock(us)
                 val layout = measurer.measure(text, style)
-                drawText(layout, topLeft = Offset(x + 3f, 2f))
+                drawText(layout, topLeft = Offset(x - layout.size.width / 2f, (rulerH - layout.size.height) / 2f))
+            } else {
+                drawCircle(Amiri.TextTertiary.copy(alpha = 0.8f), 1.6f * geo.dp, Offset(x, rulerH / 2f))
             }
         }
         i++

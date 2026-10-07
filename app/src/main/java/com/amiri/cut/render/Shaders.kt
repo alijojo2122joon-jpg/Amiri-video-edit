@@ -159,6 +159,17 @@ uniform sampler2D uTex;
 void main() { gl_FragColor = texture2D(uTex, vUv); }
 """
 
+    /** Draws a layer scaled to cover the frame (centre crop), darkened by [uDim]. */
+    const val COVER = COMMON + """
+uniform sampler2D uTex;
+uniform vec2 uScale;
+uniform float uDim;
+void main() {
+  vec4 c = texture2D(uTex, clamp(0.5 + (vUv - 0.5) * uScale, 0.0, 1.0));
+  gl_FragColor = vec4(unpremul(c) * uDim, 1.0);
+}
+"""
+
     const val MIX = COMMON + """
 uniform sampler2D uTex;
 uniform sampler2D uOrig;

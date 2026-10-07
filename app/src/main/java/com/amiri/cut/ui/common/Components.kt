@@ -1,6 +1,8 @@
 package com.amiri.cut.ui.common
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -31,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -87,23 +90,26 @@ fun GlassButton(
     val source = remember { MutableInteractionSource() }
     val view = LocalView.current
     val shape = RoundedCornerShape(16.dp)
+    val fg = if (primary) com.amiri.cut.ui.theme.onAccent(accent) else Amiri.TextPrimary
     Row(
         modifier
             .pressScale(source)
-            .then(if (primary) Modifier.glassAccent(accent, shape) else Modifier.glass(shape))
+            .clip(shape)
+            .background(if (primary) accent else Amiri.SurfaceHigh, shape)
+            .then(if (primary) Modifier else Modifier.border(1.dp, Amiri.Line, shape))
             .clickable(interactionSource = source, indication = null, enabled = enabled) {
                 Haptics.select(view); onClick()
             }
             .alpha(if (enabled) 1f else 0.4f)
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = 18.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = if (primary) accent else Amiri.TextPrimary, modifier = Modifier.size(18.dp))
-            Box(Modifier.size(10.dp))
+            Icon(icon, null, tint = fg, modifier = Modifier.size(19.dp))
+            Box(Modifier.size(8.dp))
         }
-        Text(text, color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium, fontSize = 15.sp)
+        Text(text, color = fg, style = MaterialTheme.typography.labelLarge, fontSize = 15.sp)
     }
 }
 
@@ -135,10 +141,10 @@ fun IconAction(
 @Composable
 fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
-        text.uppercase(),
-        modifier = modifier.padding(bottom = 8.dp),
-        color = Amiri.TextSecondary,
-        style = MaterialTheme.typography.labelMedium,
+        text,
+        modifier = modifier.padding(bottom = 10.dp),
+        color = Amiri.TextPrimary,
+        style = MaterialTheme.typography.titleSmall,
     )
 }
 
@@ -151,7 +157,6 @@ fun <T> ChoiceChips(
     modifier: Modifier = Modifier,
     onSelect: (T) -> Unit,
 ) {
-    val accent = LocalAccent.current
     val view = LocalView.current
     Row(
         modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -159,18 +164,20 @@ fun <T> ChoiceChips(
     ) {
         options.forEach { o ->
             val sel = o == selected
-            val shape = RoundedCornerShape(12.dp)
+            val shape = RoundedCornerShape(50)
             Box(
                 Modifier
-                    .then(if (sel) Modifier.glassAccent(accent, shape) else Modifier.glass(shape, strength = 0.7f))
+                    .clip(shape)
+                    .background(if (sel) Amiri.TextPrimary else Amiri.SurfaceHigh, shape)
                     .clickable { Haptics.select(view); onSelect(o) }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
             ) {
                 Text(
                     label(o),
-                    color = if (sel) Amiri.TextPrimary else Amiri.TextSecondary,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (sel) Color(0xFF0B0B0C) else Amiri.TextSecondary,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontSize = 13.sp,
+                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
                 )
             }
         }
@@ -179,7 +186,7 @@ fun <T> ChoiceChips(
 
 @Composable
 fun GlassCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Box(modifier.glass(RoundedCornerShape(22.dp)).padding(16.dp)) { content() }
+    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Amiri.SurfaceHigh).padding(16.dp)) { content() }
 }
 
 @Composable
@@ -248,4 +255,66 @@ fun Dot(color: Color, modifier: Modifier = Modifier) {
 @Composable
 fun Gap(h: Int = 0, w: Int = 0) {
     androidx.compose.foundation.layout.Spacer(Modifier.size(width = w.dp, height = h.dp))
+}
+
+/** One row in an action sheet. */
+data class SheetAction(
+    val label: String,
+    val icon: ImageVector,
+    val danger: Boolean = false,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
+
+/** CapCut-style action sheet: a title, optional subtitle, and big tappable rows with icons. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun ActionSheet(
+    title: String,
+    subtitle: String? = null,
+    actions: List<SheetAction>,
+    onDismiss: () -> Unit,
+    header: (@Composable () -> Unit)? = null,
+) {
+    val view = LocalView.current
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Amiri.Surface,
+        dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).size(width = 38.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Amiri.SurfaceHighest)) },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            header?.invoke()
+            Text(title, color = Amiri.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, modifier = Modifier.padding(horizontal = 4.dp))
+            if (subtitle != null) Text(subtitle, color = Amiri.TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+            Box(Modifier.height(10.dp))
+            Column(Modifier.clip(RoundedCornerShape(18.dp)).background(Amiri.SurfaceHigh)) {
+                actions.forEachIndexed { i, a ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = a.enabled) { Haptics.select(view); onDismiss(); a.onClick() }
+                            .padding(horizontal = 16.dp, vertical = 15.dp)
+                            .alpha(if (a.enabled) 1f else 0.4f),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(a.icon, null, tint = if (a.danger) Amiri.Danger else Amiri.TextPrimary, modifier = Modifier.size(21.dp))
+                        Text(
+                            a.label, color = if (a.danger) Amiri.Danger else Amiri.TextPrimary,
+                            style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 14.dp),
+                        )
+                    }
+                    if (i < actions.lastIndex) Box(Modifier.fillMaxWidth().padding(start = 51.dp).height(1.dp).background(Amiri.Line))
+                }
+            }
+        }
+    }
+}
+
+/** Small rounded badge (durations, counts). */
+@Composable
+fun Badge(text: String, modifier: Modifier = Modifier, bg: Color = Color.Black.copy(alpha = 0.55f), fg: Color = Color.White) {
+    Text(
+        text, color = fg, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold,
+        style = com.amiri.cut.ui.theme.MonoStyle,
+        modifier = modifier.clip(RoundedCornerShape(6.dp)).background(bg).padding(horizontal = 5.dp, vertical = 1.5.dp),
+    )
 }

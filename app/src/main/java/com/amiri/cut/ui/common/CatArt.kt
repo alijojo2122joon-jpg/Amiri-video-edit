@@ -170,8 +170,12 @@ fun PurrWhileVisible() {
  * If the screen is touched while it walks, it dashes away; a minute later it comes back.
  * It never takes touches (drawn only).
  */
+/** Lets the screenshot harness keep the walking cat out of captures. */
+object WalkingCatGate { @Volatile var disabled = false }
+
 @Composable
 fun WalkingCat(modifier: Modifier, body: Color, eye: Color, intervalMs: Long = 60_000L) {
+    if (WalkingCatGate.disabled) return
     val state = androidx.compose.runtime.remember { floatArrayOf(-1f, 1f, 0f, 0f) } // x (0..1, -1 = hidden), dir, phase, fleeing
     var frame by androidx.compose.runtime.remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     androidx.compose.runtime.LaunchedEffect(Unit) {

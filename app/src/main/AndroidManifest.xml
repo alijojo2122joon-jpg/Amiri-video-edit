@@ -16,6 +16,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Voice-over recording (stays on the device). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- In-app gallery (videos, photos, music) — read only, nothing leaves the phone. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Tiny touch vibration. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

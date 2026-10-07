@@ -114,7 +114,19 @@ class Compositor(private val text: TextRenderer) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         var canvas = pool.obtain(cw, ch)
         var spare = pool.obtain(cw, ch)
-        if (project.settings.background == CanvasBackground.BLACK) canvas.clear(0f, 0f, 0f, 1f) else canvas.clear()
+        val fill = project.settings.fill
+        when {
+            fill.mode == com.amiri.cut.core.model.FillMode.COLOR -> {
+                val c = fill.color
+                canvas.clear(((c shr 16) and 255) / 255f, ((c shr 8) and 255) / 255f, (c and 255) / 255f, 1f)
+            }
+            fill.mode == com.amiri.cut.core.model.FillMode.BLUR -> {
+                canvas.clear(0f, 0f, 0f, 1f)
+                drawBlurFill(project, t, cw, ch, src, opt, canvas, fill.blur)
+            }
+            project.settings.background == CanvasBackground.BLACK -> canvas.clear(0f, 0f, 0f, 1f)
+            else -> canvas.clear()
+        }
 
         for (track in project.tracks.asReversed()) {
             if (track.hidden || track.kind == TrackKind.AUDIO) continue
@@ -151,6 +163,37 @@ class Compositor(private val text: TextRenderer) {
         p.draw()
         pool.recycle(canvas)
         pool.recycle(spare)
+    }
+
+    /**
+     * Canvas "blur" background: the bottom-most picture at [t], scaled to cover the frame
+     * and heavily blurred, so a landscape clip in a vertical frame has no black bars.
+     */
+    private fun drawBlurFill(project: Project, t: Long, cw: Int, ch: Int, src: FrameSources, opt: RenderOptions, canvas: Fbo, amount: Float) {
+        var clip: Clip? = null
+        for (track in project.tracks.asReversed()) {
+            if (track.hidden || track.kind == TrackKind.AUDIO || track.kind == TrackKind.TEXT) continue
+            val c = track.clipAt(t) ?: continue
+            if (c.kind != ClipKind.MEDIA) continue
+            val a = project.asset(c.assetId) ?: continue
+            if (a.type == MediaType.AUDIO) continue
+            clip = c; break
+        }
+        val c = clip ?: return
+        val layer = buildLayer(project, c, t, cw, ch, src, opt) ?: return
+        val k = max(cw / layer.baseW, ch / layer.baseH)
+        val sx = cw / (layer.baseW * k)
+        val sy = ch / (layer.baseH * k)
+        val sw = max(2, cw / 4); val sh = max(2, ch / 4)
+        val small = pool.obtain(sw, sh)
+        small.bind()
+        prog("cover", Shaders.COVER).apply { use(); tex("uTex", 0, layer.fbo.tex); f2("uScale", sx, sy); f1("uDim", 0.82f); draw() }
+        pool.recycle(layer.fbo)
+        val blurred = blur(small, (6f + 26f * amount.coerceIn(0f, 1f)))
+        pool.recycle(small)
+        canvas.bind()
+        prog("copy", Shaders.COPY).apply { use(); tex("uTex", 0, blurred.tex); draw() }
+        pool.recycle(blurred)
     }
 
     private fun captureCanvas(canvas: Fbo, cb: (ByteArray, Int, Int) -> Unit) {

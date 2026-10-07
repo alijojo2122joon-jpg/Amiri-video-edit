@@ -81,12 +81,11 @@ import com.amiri.cut.ui.theme.LocalAccent
 import com.amiri.cut.ui.theme.glass
 import com.amiri.cut.ui.theme.glassAccent
 
-/** Contextual panel shown above the bottom toolbar for the active tool. */
+/** Contents of the tool sheet (the sheet itself — title and ✓ — is drawn by the editor). */
 @Composable
 fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifier) {
     Box(
-        modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).glass(RoundedCornerShape(18.dp))
-            .heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(10.dp),
+        modifier.fillMaxWidth().heightIn(max = 330.dp).verticalScroll(rememberScrollState()).padding(horizontal = 8.dp).padding(bottom = 10.dp),
     ) {
         Column {
             c.busy?.let { b -> BusyBar(c, b) }
@@ -107,6 +106,8 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
                 EditorTool.TRANSITION -> TransitionPanel(c)
                 EditorTool.FILTERS -> FiltersPanel(c)
                 EditorTool.STABILIZE -> StabilizePanel(c)
+                EditorTool.RATIO -> RatioPanel(c)
+                EditorTool.BACKGROUND -> BackgroundPanel(c)
             }
         }
     }
@@ -116,13 +117,15 @@ fun ToolPanel(c: EditorController, tool: EditorTool, modifier: Modifier = Modifi
 internal fun PanelAction(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
     val view = LocalView.current
     Column(
-        Modifier.width(66.dp).clip(RoundedCornerShape(12.dp))
+        Modifier.width(70.dp).clip(RoundedCornerShape(14.dp))
             .clickable(enabled = enabled) { Haptics.select(view); onClick() }
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, label, tint = if (enabled) Amiri.TextPrimary else Amiri.TextTertiary, modifier = Modifier.size(22.dp))
-        Text(label, color = if (enabled) Amiri.TextSecondary else Amiri.TextTertiary, fontSize = 10.sp, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
+        Box(Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(Amiri.SurfaceHigh), contentAlignment = Alignment.Center) {
+            Icon(icon, label, tint = if (enabled) Amiri.TextPrimary else Amiri.TextTertiary, modifier = Modifier.size(22.dp))
+        }
+        Text(label, color = if (enabled) Amiri.TextSecondary else Amiri.TextTertiary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
     }
 }
 
@@ -163,7 +166,7 @@ private fun MediaPanel(c: EditorController) {
             if (c.importing > 0) Text("Importing ${c.importing}…", color = accent, fontSize = 11.sp, modifier = Modifier.padding(end = 10.dp))
             Row(
                 Modifier.glassAccent(accent, RoundedCornerShape(10.dp))
-                    .clickable { importer.launch(arrayOf("video/*", "image/*", "audio/*")) }
+                    .clickable { c.openAddMedia(Placement.AT_PLAYHEAD) }
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -363,28 +366,30 @@ private fun RotoPanel(c: EditorController) {
 
 @Composable
 internal fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
-    val accent = LocalAccent.current
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(50)
     Box(
         Modifier
-            .then(if (on) Modifier.glassAccent(accent, shape) else Modifier.glass(shape, strength = 0.7f))
+            .clip(shape)
+            .background(if (on) Amiri.TextPrimary else Amiri.SurfaceHigh, shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
-        Text(label, color = if (on) Amiri.TextPrimary else Amiri.TextSecondary, fontSize = 12.sp)
+        Text(label, color = if (on) androidx.compose.ui.graphics.Color(0xFF0B0B0C) else Amiri.TextSecondary, fontSize = 12.5.sp, fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Medium)
     }
 }
 
 @Composable
 internal fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
     val accent = LocalAccent.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(34.dp)) {
-        Text(label, color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(56.dp))
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(40.dp).padding(horizontal = 4.dp)) {
+        Text(label, color = Amiri.TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(64.dp))
         androidx.compose.material3.Slider(
             value = value, onValueChange = onChange, valueRange = range,
-            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Amiri.SurfaceHigh),
+            colors = androidx.compose.material3.SliderDefaults.colors(
+                thumbColor = androidx.compose.ui.graphics.Color.White, activeTrackColor = accent, inactiveTrackColor = Amiri.SurfaceHighest,
+            ),
             modifier = Modifier.weight(1f),
         )
-        Text(display, color = Amiri.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(44.dp).padding(start = 6.dp))
+        Text(display, color = Amiri.TextPrimary, fontSize = 12.sp, style = com.amiri.cut.ui.theme.MonoStyle, maxLines = 1, modifier = Modifier.width(52.dp).padding(start = 8.dp))
     }
 }

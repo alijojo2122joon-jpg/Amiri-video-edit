@@ -20,6 +20,19 @@ enum class TrackKind { VIDEO, TEXT, OVERLAY, AUDIO }
 @Serializable
 enum class CanvasBackground { BLACK, TRANSPARENT }
 
+/** How empty canvas areas are filled (CapCut "Background"). */
+@Serializable
+enum class FillMode { BLACK, COLOR, BLUR }
+
+@Serializable
+data class CanvasFill(
+    val mode: FillMode = FillMode.BLACK,
+    /** ARGB colour for [FillMode.COLOR]. */
+    val color: Long = 0xFF000000,
+    /** Blur strength 0..1 for [FillMode.BLUR]. */
+    val blur: Float = 0.6f,
+)
+
 @Serializable
 data class ProjectSettings(
     val width: Int,
@@ -28,6 +41,7 @@ data class ProjectSettings(
     val aspectLabel: String,
     val resolutionLabel: String,
     val background: CanvasBackground = CanvasBackground.BLACK,
+    val fill: CanvasFill = CanvasFill(),
 ) {
     val aspect: Float get() = width.toFloat() / height.toFloat()
 }

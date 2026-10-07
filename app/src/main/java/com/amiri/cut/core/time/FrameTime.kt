@@ -40,6 +40,13 @@ object FrameTime {
     }
 
     /** Short "m:ss" label used for durations. */
+    /** "00:07" / "1:02:07" — the playback clock shown next to the play button. */
+    fun shortClock(us: Long): String {
+        val s = (us.coerceAtLeast(0) / 1_000_000)
+        return if (s >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
+        else String.format(java.util.Locale.US, "%02d:%02d", s / 60, s % 60)
+    }
+
     fun shortDuration(us: Long): String {
         val totalSec = us / US_PER_SECOND
         return "%d:%02d".format(totalSec / 60, totalSec % 60)

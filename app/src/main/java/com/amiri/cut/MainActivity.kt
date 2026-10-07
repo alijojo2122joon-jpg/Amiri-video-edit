@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.launch
 import com.amiri.cut.ui.editor.EditorScreen
 import com.amiri.cut.ui.home.HomeScreen
 import com.amiri.cut.ui.newproject.NewProjectScreen
@@ -33,7 +34,16 @@ sealed interface Screen {
     data object Home : Screen
     data object NewProject : Screen
     data object Settings : Screen
-    data class Editor(val projectId: String, val importUris: List<Uri> = emptyList(), val recover: Boolean = false) : Screen
+    /** Gallery picker that starts a new project (optionally running a quick tool after import). */
+    data class Picker(val quick: com.amiri.cut.ui.editor.QuickStart? = null) : Screen
+    data class Editor(
+        val projectId: String,
+        val importUris: List<Uri> = emptyList(),
+        val recover: Boolean = false,
+        val quick: com.amiri.cut.ui.editor.QuickStart? = null,
+        /** CI screenshot harness only. */
+        val demo: com.amiri.cut.export.UiDemo.Plan? = null,
+    ) : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -42,6 +52,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val app = application as AmiriCutApp
         if (intent?.getBooleanExtra("amiri_selftest", false) == true) com.amiri.cut.export.SelfTest.run(this)
+        val demoScreen = intent?.getStringExtra("amiri_screen")
+        val demoScan = intent?.getStringExtra("amiri_scan")?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
+        if (demoScreen != null) { com.amiri.cut.ui.theme.CatSounds.purrOn = false; com.amiri.cut.ui.common.WalkingCatGate.disabled = true }
         setContent {
             val settings = app.settings
             LaunchedEffect(settings.haptics) { Haptics.enabled = settings.haptics; com.amiri.cut.ui.theme.CatSounds.hapticsOn = settings.haptics }
@@ -52,7 +65,10 @@ class MainActivity : ComponentActivity() {
             }
             AmiriTheme(accent = Color(settings.accent.argb)) {
                 com.amiri.cut.ui.common.CatTouchFeedback {
-                    AppNavigation(app, splash = savedInstanceState == null)
+                    AppNavigation(
+                        app, splash = savedInstanceState == null && demoScreen == null,
+                        demoScreen = demoScreen, demoScan = demoScan,
+                    )
                     CrashDialog(app)
                 }
             }
@@ -61,15 +77,28 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AppNavigation(app: AmiriCutApp, splash: Boolean) {
+private fun AppNavigation(app: AmiriCutApp, splash: Boolean, demoScreen: String? = null, demoScan: List<String> = emptyList()) {
     val stack = remember { mutableStateListOf<Screen>(if (splash) Screen.Splash else Screen.Home) }
     val current = stack.last()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var creating by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     fun push(s: Screen) { stack.add(s) }
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
     fun replace(s: Screen) { stack.removeAt(stack.lastIndex); stack.add(s) }
 
+    // CI screenshot harness: jump straight to the requested screen with demo content.
+    if (demoScreen != null) LaunchedEffect(demoScreen) {
+        val plan = com.amiri.cut.export.UiDemo.prepare(app, demoScreen, demoScan)
+        stack.clear()
+        stack.add(Screen.Home)
+        when {
+            plan.screen == "picker" -> stack.add(Screen.Picker())
+            plan.projectId != null -> stack.add(Screen.Editor(plan.projectId, importUris = plan.uris, demo = plan))
+        }
+    }
+
     // The editor handles its own back press (it must save first).
-    BackHandler(enabled = stack.size > 1 && current !is Screen.Editor) { pop() }
+    BackHandler(enabled = stack.size > 1 && current !is Screen.Editor && current !is Screen.Picker) { pop() }
 
     AnimatedContent(
         targetState = current,
@@ -81,9 +110,25 @@ private fun AppNavigation(app: AmiriCutApp, splash: Boolean) {
             Screen.Splash -> com.amiri.cut.ui.home.CatSplash { replace(Screen.Home) }
             Screen.Home -> HomeScreen(
                 app = app,
-                onNewProject = { push(Screen.NewProject) },
+                onNewProject = { push(Screen.Picker()) },
+                onQuickStart = { q -> push(Screen.Picker(q)) },
+                onCustomCanvas = { push(Screen.NewProject) },
                 onOpen = { id, recover -> push(Screen.Editor(id, recover = recover)) },
                 onSettings = { push(Screen.Settings) },
+            )
+            is Screen.Picker -> com.amiri.cut.ui.picker.MediaPickerScreen(
+                request = pickRequestFor(screen.quick),
+                onCancel = { pop() },
+                onPicked = { uris ->
+                    if (!creating) {
+                        creating = true
+                        scope.launch {
+                            val p = com.amiri.cut.ui.newproject.AutoProject.create(app, uris)
+                            creating = false
+                            replace(Screen.Editor(p.id, importUris = uris, quick = screen.quick))
+                        }
+                    }
+                },
             )
             Screen.NewProject -> NewProjectScreen(
                 app = app,
@@ -96,9 +141,24 @@ private fun AppNavigation(app: AmiriCutApp, splash: Boolean) {
                 projectId = screen.projectId,
                 importUris = screen.importUris,
                 recover = screen.recover,
+                quick = screen.quick,
+                demo = screen.demo,
                 onExit = { pop() },
             )
         }
+    }
+}
+
+private fun pickRequestFor(q: com.amiri.cut.ui.editor.QuickStart?): com.amiri.cut.ui.picker.PickRequest {
+    val V = com.amiri.cut.ui.picker.GalleryItem.Kind.VIDEO
+    val I = com.amiri.cut.ui.picker.GalleryItem.Kind.IMAGE
+    return when (q) {
+        null -> com.amiri.cut.ui.picker.PickRequest(setOf(V, I), multiple = true, confirm = "Add")
+        com.amiri.cut.ui.editor.QuickStart.REMOVE_BG -> com.amiri.cut.ui.picker.PickRequest(setOf(V), multiple = false, confirm = "Remove background", title = "Pick a video with a person")
+        com.amiri.cut.ui.editor.QuickStart.SMART_ROTO -> com.amiri.cut.ui.picker.PickRequest(setOf(V, I), multiple = false, confirm = "Start roto", title = "Pick a video or photo to cut out")
+        com.amiri.cut.ui.editor.QuickStart.CLEAN_VOICE -> com.amiri.cut.ui.picker.PickRequest(setOf(V), multiple = false, confirm = "Clean voice", title = "Pick a video with speech")
+        com.amiri.cut.ui.editor.QuickStart.STABILIZE -> com.amiri.cut.ui.picker.PickRequest(setOf(V), multiple = false, confirm = "Stabilize", title = "Pick a shaky video")
+        com.amiri.cut.ui.editor.QuickStart.BEAT_SYNC -> com.amiri.cut.ui.picker.PickRequest(setOf(V, I), multiple = true, confirm = "Next", title = "Pick the clips to cut on the beat")
     }
 }
 

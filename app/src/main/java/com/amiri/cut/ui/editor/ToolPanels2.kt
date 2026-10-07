@@ -1208,10 +1208,10 @@ internal fun AudioPanel(c: EditorController) {
             return@Column
         }
         Row(Modifier.horizontalScroll(rememberScrollState())) {
-            PanelAction(Icons.Outlined.GraphicEq, "+ Sound effect") { preferName = "SFX"; soundPicker.launch(types) }
-            PanelAction(Icons.Outlined.LibraryMusic, "+ Music") { preferName = "Music"; soundPicker.launch(types) }
-            PanelAction(Icons.Outlined.Mic, "● Record voice") { micPerm.launch(android.Manifest.permission.RECORD_AUDIO) }
-            PanelAction(Icons.Outlined.Upload, "+ Voice file") { preferName = "Voice"; soundPicker.launch(types) }
+            PanelAction(Icons.Outlined.GraphicEq, "Sound FX") { preferName = "SFX"; soundPicker.launch(types) }
+            PanelAction(Icons.Outlined.LibraryMusic, "Music") { c.openMusicPicker() }
+            PanelAction(Icons.Outlined.Mic, "Voice-over") { micPerm.launch(android.Manifest.permission.RECORD_AUDIO) }
+            PanelAction(Icons.Outlined.Upload, "Audio file") { preferName = "Voice"; soundPicker.launch(types) }
             val sel = c.selectedClip()
             val selTrack = sel?.let { c.project?.trackOfClip(it.id) }
             if (sel != null && selTrack?.acceptsVisual == true && c.project?.asset(sel.assetId)?.hasAudio == true && !sel.muted) {
